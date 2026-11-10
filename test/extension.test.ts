@@ -18,6 +18,16 @@ test("registers the existing tool, command, shortcuts, and lifecycle hooks", () 
  expect(events).toEqual(["session_start", "session_switch", "tool_result"]);
 });
 
+test("shows the above-editor task panel even when there are no tasks", async () => {
+ let start: any, widget: any, placement: any;
+ extension({ registerTool() {}, registerCommand() {}, registerShortcut() {}, on: (event: string, handler: any) => { if (event === "session_start") start = handler; } } as any);
+ const ctx = { cwd: process.cwd(), hasUI: true, isProjectTrusted: () => false, ui: { setWidget: (_key: string, factory: any, options: any) => { widget = factory; placement = options.placement; }, notify() {} }, sessionManager: { getSessionId: () => `empty-${crypto.randomUUID()}`, getEntries: () => [] } };
+ await start({}, ctx);
+ const theme = { fg: (_color: string, text: string) => text, strikethrough: (text: string) => text };
+ expect(placement).toBe("aboveEditor");
+ expect(widget({ requestRender() {} }, theme).render(80).join("\n")).toContain("No tasks worked on in this session yet");
+});
+
 test("manifest exposes the source and host packages remain peers", async () => {
  const pkg = await Bun.file(new URL("../package.json", import.meta.url)).json();
  expect(pkg.pi.extensions).toEqual(["./src/index.ts"]);

@@ -160,7 +160,6 @@ export default function taskPanel(pi: ExtensionAPI) {
 	}
 
 	function render(theme: Theme, width: number): string[] {
-		if (!tasks.length) return [];
 		const list = shown();
 		const done = list.filter((task) => task.completed).length;
 		const title = { current: "Current", project: "Project", completed: "Completed" }[view];
@@ -184,11 +183,6 @@ export default function taskPanel(pi: ExtensionAPI) {
 		if (!Array.isArray(data)) throw new Error("Invalid task list");
 		tasks = data;
 		if (!ctx.hasUI) return;
-		if (!tasks.length) {
-			ctx.ui.setWidget("dex-panel", undefined);
-			tui = undefined;
-			return;
-		}
 		ctx.ui.setWidget("dex-panel", (t, theme) => {
 			tui = t;
 			return { render: (width: number) => render(theme, width), invalidate() {} };
