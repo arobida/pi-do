@@ -2,21 +2,29 @@
 
 A standalone task panel for Pi. Exposes the `todo_task` tool and a widget above the editor without changing conversation context management.
 
+## Features
+
+- **Task panel widget** — live task list rendered above the editor; collapsible, with current/project/completed views.
+- **`todo_task` tool** — the agent can create, list, start, edit, and complete tasks on request.
+- **todo.txt format** — task lines support priorities, dates, `+projects` and `@contexts`; pi-do metadata travels in `piid:`, `pistart:` and related tags.
+- **Two storage backends** — a built-in JSONL file backend (temporary per-session by default, or a persistent file you choose) and an optional Dex integration via the `dex` CLI.
+- **Export** — dump the active backend to a plain todo.txt file with `/todos export <path>`.
+- **Live reload** — the panel watches task storage and refreshes when other agents change it.
+
 ## Requirements
 
 - Pi coding agent
-- Bun for development
+- Optional: `dex` on PATH for the Dex backend
 
-## Local development
+## Installation
+
+Once published:
 
 ```sh
-bun install
-bun test
-bun run pack:check
-pi install "$PWD"
+pi install pi-do
 ```
 
-Run `/reload` in Pi after source changes. Pi loads `src/index.ts` directly; no build step is required. Install this package only once; remove any standalone `dex-panel.ts` copy first.
+Until then, install from a local checkout (see [Contributing](CONTRIBUTING.md)).
 
 ## Usage
 
@@ -47,6 +55,6 @@ Add a `piDo` object to Pi's user settings (`~/.pi/agent/settings.json`, or `$PI_
 
 For example, set `{"piDo":{"backend":"dex"}}` in project settings to use Dex for that project while retaining the user-level file backend elsewhere. Invalid pi-do settings cause an error rather than silently selecting a different store.
 
-## Publishing later
+## Development
 
-The Pi manifest and `pi-package` keyword are included. Before the first release, confirm npm name availability (or choose a scope), choose a license, add repository metadata, and review the tarball with `bun run pack:check`. Then publish with `bun publish`. Nothing is published automatically.
+Tech stack, project structure, local development, and publishing: see [CONTRIBUTING.md](CONTRIBUTING.md).
