@@ -15,7 +15,7 @@ test("registers the existing tool, command, shortcuts, and lifecycle hooks", () 
  expect(tools.map(t => t.name)).toEqual(["todo_task"]);
  expect(commands).toEqual(["todos"]);
  expect(shortcuts).toEqual(["ctrl+shift+t", "ctrl+shift+v"]);
- expect(events).toEqual(["session_start", "session_switch", "tool_result"]);
+ expect(events).toEqual(["session_shutdown", "session_start", "session_switch", "before_agent_start", "tool_result"]);
 });
 
 test("shows the above-editor task panel even when there are no tasks", async () => {
@@ -147,4 +147,48 @@ test("user and trusted project settings merge with environment overrides", async
   }
   rmSync(dir, { recursive: true, force: true });
  }
+});
+
+test("audit regressions: names, options, dates, refresh, export ~", async () => {
+ const { mkdtempSync, rmSync, readFileSync, writeFileSync, existsSync } = await import("node:fs");
+ const { tmpdir, homedir } = await import("node:os");
+ const { join } = await import("node:path");
+ const dir = mkdtempSync(join(tmpdir(), "pi-do-audit-"));
+ const previous = { file: process.env.PI_DO_FILE, backend: process.env.PI_DO_BACKEND };
+ process.env.PI_DO_FILE = join(dir, "tasks.jsonl"); delete process.env.PI_DO_BACKEND;
+ try {
+  let tool: any;
+  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, on() {}, appendEntry() {} } as any);
+  let failWidget = false;
+  const ctx = { cwd: dir, hasUI: true, isProjectTrusted: () => true, ui: { notify() {}, setWidget() { if (failWidget) throw new Error("boom"); } }, sessionManager: { getSessionId: () => "s" } };
+  const run = async (params: any) => (await tool.execute("call", params, undefined, undefined, ctx)).content[0].text;
+  for (const name of ["review piid:foo now", "x investigate bug", "--help", "-v", "a pistart:1"]) await expect(run({ action: "create", name })).rejects.toThrow("Task name must");
+  const id = (await run({ action: "create", name: "description", description: "--name" })).split(" ").pop();
+  expect(JSON.parse(await run({ action: "list" }))[0]).toMatchObject({ name: "description", description: "--name" });
+  await run({ action: "complete", id });
+  const old = readFileSync(process.env.PI_DO_FILE!, "utf8").replace(/x \d{4}-\d{2}-\d{2}/, "x 2020-01-01");
+  writeFileSync(process.env.PI_DO_FILE!, JSON.stringify({ todo: JSON.parse(old).todo }) + "\n");
+  await run({ action: "complete", id });
+  expect(readFileSync(process.env.PI_DO_FILE!, "utf8")).toContain("x 2020-01-01");
+  failWidget = true;
+  expect(await run({ action: "create", name: "survives refresh" })).toContain("Created task");
+  expect(existsSync(`${process.env.PI_DO_FILE}.lock`)).toBe(false);
+ } finally {
+  if (previous.file === undefined) delete process.env.PI_DO_FILE; else process.env.PI_DO_FILE = previous.file;
+  if (previous.backend === undefined) delete process.env.PI_DO_BACKEND; else process.env.PI_DO_BACKEND = previous.backend;
+  rmSync(dir, { recursive: true, force: true });
+ }
+});
+
+test("current view shows subtasks of session tasks but not unrelated new tasks", async () => {
+ let start: any, widget: any, tool: any;
+ const tasks = [{ id: "a", name: "mine", completed: false, started_at: "t" }, { id: "b", name: "sub", completed: false, started_at: null, parent_id: "a" }, { id: "c", name: "subsub", completed: false, started_at: null, parent_id: "b" }, { id: "d", name: "unrelated", completed: false, started_at: null }];
+ const prev = process.env.PI_DO_BACKEND; process.env.PI_DO_BACKEND = "dex";
+ try {
+  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, appendEntry() {}, exec: async () => ({ code: 0, stdout: JSON.stringify(tasks), stderr: "" }), on: (e: string, h: any) => { if (e === "session_start") start = h; } } as any);
+  const ctx = { cwd: process.cwd(), hasUI: true, isProjectTrusted: () => false, ui: { setWidget: (_k: string, f: any) => widget = f, notify() {} }, sessionManager: { getSessionId: () => "s", getEntries: () => [{ type: "custom", customType: "dex-current", data: { id: "a" } }] } };
+  await start({}, ctx);
+  const out = widget({ requestRender() {} }, { fg: (_c: string, x: string) => x, strikethrough: (x: string) => x }).render(200).join("\n");
+  expect(out).toContain("subsub"); expect(out).toContain("sub"); expect(out).not.toContain("unrelated");
+ } finally { if (prev === undefined) delete process.env.PI_DO_BACKEND; else process.env.PI_DO_BACKEND = prev; }
 });

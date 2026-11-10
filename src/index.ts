@@ -1,7 +1,7 @@
 import { getAgentDir, type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, watch, type FSWatcher, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir, homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
@@ -25,16 +25,46 @@ function parseTodo(line: string, index: number): Task {
 	return { id: meta.piid || `line-${index + 1}-${createHash("sha256").update(line).digest("hex").slice(0, 12)}`, name: completed ? body.replace(/^x\s+(?:\d{4}-\d{2}-\d{2}\s+)?/, "") : body, completed, started_at: meta.pistart || null, description: meta.pidesc, parent: meta.piparent, result: meta.piresult };
 }
 
+function todoLine(task: Task, date: string | undefined): string {
+	let name = task.name.trim();
+	if (task.completed && /^\([A-Z]\)\s/.test(name)) name = name.replace(/^\(([A-Z])\)\s+/, "") + ` pri:${name[1]}`;
+	const metadata = Object.entries({ piid: task.id, pistart: task.started_at, pidesc: task.description, piparent: task.parent, piresult: task.result })
+		.filter(([, value]) => typeof value === "string" && value !== "").map(([key, value]) => `${key}:${encodeURIComponent(value as string)}`);
+	return `${task.completed ? `x ${date} ` : ""}${name} ${metadata.join(" ")}`;
+}
+
+// Names are stored as todo.txt text, so reject what would read back differently or reach Dex as a flag.
+function checkName(name: string) {
+	if (/[\r\n]/.test(name) || !name.trim()) throw new Error("Task name must be a non-empty single line");
+	if (/^\s*x\s/.test(name)) throw new Error('Task name must not start with "x " (todo.txt completion marker)');
+	if (/^\s*-/.test(name)) throw new Error('Task name must not start with "-"');
+	if (/(?:^|\s)pi(?:id|start|desc|parent|result):/.test(name)) throw new Error("Task name must not contain pi-do metadata tokens (piid:, pistart:, pidesc:, piparent:, piresult:)");
+}
+
+const home = (path: string) => path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
+
+async function withLock<T>(file: string, fn: () => T): Promise<T> {
+	const lock = `${file}.lock`;
+	for (let i = 0; ; i++) {
+		try { writeFileSync(lock, String(process.pid), { flag: "wx" }); break; }
+		catch (error: any) {
+			if (error.code !== "EEXIST") throw error;
+			// shortcut: a crashed holder's lock is treated as stale after 10s; fine for interactive use.
+			try { if (Date.now() - statSync(lock).mtimeMs > 10_000) { unlinkSync(lock); continue; } } catch {}
+			if (i > 200) throw new Error(`Task file is locked: ${lock}`);
+			await new Promise((r) => setTimeout(r, 25));
+		}
+	}
+	try { return fn(); } finally { try { unlinkSync(lock); } catch {} }
+}
+
 function dexTodo(task: any): string {
 	if (typeof task.id !== "string" || typeof task.name !== "string" || typeof task.completed !== "boolean") throw new Error("Invalid Dex task");
-	let name = task.name.replace(/[\r\n]+/g, " ").trim();
+	const name = task.name.replace(/[\r\n]+/g, " ").trim();
 	if (!name) throw new Error(`Dex task ${task.id} has no name`);
-	if (task.completed && /^\([A-Z]\)\s/.test(name)) name = name.replace(/^\(([A-Z])\)\s+/, "") + ` pri:${name[1]}`;
-	const metadata = Object.entries({ piid: task.id, pistart: task.started_at, pidesc: task.description, piparent: task.parent_id, piresult: task.result })
-		.filter(([, value]) => typeof value === "string" && value !== "").map(([key, value]) => `${key}:${encodeURIComponent(value as string)}`);
 	const date = typeof task.completed_at === "string" && /^\d{4}-\d{2}-\d{2}/.test(task.completed_at) ? task.completed_at.slice(0, 10) : undefined;
 	if (task.completed && !date) throw new Error(`Dex task ${task.id} has no completion date`);
-	return `${task.completed ? `x ${date} ` : ""}${name} ${metadata.join(" ")}`;
+	return todoLine({ ...task, name, parent: task.parent_id }, date);
 }
 
 function settings(ctx: ExtensionContext): { backend: string; file?: string } {
@@ -100,12 +130,16 @@ export default function taskPanel(pi: ExtensionAPI) {
 			if (args[0] !== "list" && args[0] !== "export") return dex(ctx, args, signal);
 			const data = JSON.parse(await dex(ctx, ["list", "--all", "--json"], signal));
 			if (!Array.isArray(data)) throw new Error("Invalid Dex task list");
-			const lines = data.map(dexTodo);
-			return args[0] === "export" ? (lines.length ? lines.join("\n") + "\n" : "") : JSON.stringify(lines.map(parseTodo));
+			if (args[0] === "export") { const lines = data.map(dexTodo); return lines.length ? lines.join("\n") + "\n" : ""; }
+			return JSON.stringify(data.map((t: any): Task => { dexTodo(t); return { id: t.id, name: t.name, completed: t.completed, started_at: t.started_at ?? null, description: t.description ?? undefined, parent: t.parent_id ?? undefined, result: t.result ?? undefined }; }));
 		}
 		if (backend !== "file") throw new Error(`Unknown pi-do backend: ${backend}`);
 		const id = createHash("sha256").update(ctx.sessionManager.getSessionId()).digest("hex");
-		const file = configuredFile ? resolve(ctx.cwd, configuredFile === "~" ? homedir() : configuredFile.startsWith("~/") ? join(homedir(), configuredFile.slice(2)) : configuredFile) : join(tmpdir(), "pi-do", `${id}.jsonl`);
+		const file = configuredFile ? resolve(ctx.cwd, home(configuredFile)) : join(tmpdir(), "pi-do", `${id}.jsonl`);
+		const [action, value] = args;
+		if (action !== "list" && action !== "export") mkdirSync(dirname(file), { recursive: true });
+		return action === "list" || action === "export" ? mutate() : withLock(file, mutate);
+		function mutate(): string {
 		let lines: string[] = [];
 		try {
 			const data = readFileSync(file, "utf8");
@@ -120,9 +154,11 @@ export default function taskPanel(pi: ExtensionAPI) {
 		} catch (error: any) { if (error.code !== "ENOENT") throw error; }
 		if (args[0] === "export") return lines.length ? lines.join("\n") + "\n" : "";
 		const items = lines.map(parseTodo);
-		const [action, value] = args;
-		if (action === "list") return JSON.stringify(items.filter(Boolean));
-		const option = (key: string) => { const i = args.indexOf(key); return i < 0 ? undefined : args[i + 1]; };
+		if (action === "list") return JSON.stringify(items);
+		// Walk option/value pairs by position so values that look like flags stay values.
+		const options: Record<string, string> = {};
+		for (let i = 2; i < args.length; i++) { if (args[i] === "--no-commit") continue; options[args[i]] = args[++i]; }
+		const option = (key: string): string | undefined => options[key];
 		let task: Task;
 		let index = items.length;
 		if (action === "create") {
@@ -139,23 +175,20 @@ export default function taskPanel(pi: ExtensionAPI) {
 			else if (action === "edit") { if (option("--name") !== undefined) task.name = option("--name")!; if (option("--description") !== undefined) task.description = option("--description"); }
 			else throw new Error(`Unknown action: ${action}`);
 		}
-		if (/[\r\n]/.test(task.name) || !task.name.trim()) throw new Error("Task name must be a non-empty single line");
-		const metadata = Object.entries({ piid: task.id, pistart: task.started_at, pidesc: task.description, piparent: task.parent, piresult: task.result })
-			.filter(([, value]) => value != null && value !== "").map(([key, value]) => `${key}:${encodeURIComponent(value!)}`);
-		let name = task.name.trim();
-		if (task.completed && /^\([A-Z]\)\s/.test(name)) name = name.replace(/^\(([A-Z])\)\s+/, "") + ` pri:${name[1]}`;
-		const completionDate = action === "complete" ? new Date().toISOString().slice(0, 10) : lines[index]?.match(/^x\s+(\d{4}-\d{2}-\d{2})\s/)?.[1] || new Date().toISOString().slice(0, 10);
-		lines[index] = `${task.completed ? `x ${completionDate} ` : ""}${name} ${metadata.join(" ")}`;
-		mkdirSync(dirname(file), { recursive: true });
+		if (action === "create" || (action === "edit" && option("--name") !== undefined)) checkName(task.name);
+		const completionDate = lines[index]?.match(/^x\s+(\d{4}-\d{2}-\d{2})\s/)?.[1] || new Date().toISOString().slice(0, 10);
+		lines[index] = todoLine(task, completionDate);
 		const temp = `${file}.${randomUUID()}.tmp`;
 		writeFileSync(temp, lines.map((todo) => JSON.stringify({ todo })).join("\n") + "\n", { mode: 0o600 });
 		renameSync(temp, file);
 		return action === "create" ? `Created task ${task.id}` : `${action}: ${task.id}`;
+		}
 	}
 
 	function shown(): Task[] {
 		if (view === "completed") return tasks.filter((t) => t.completed);
-		if (view === "current") return tasks.filter((t) => mine.has(t.id));
+		// Current = tasks this session touched plus their subtasks from anywhere (e.g. `dex create --parent` by another agent); unrelated new tasks stay in Project.
+		if (view === "current") { const byId = new Map(tasks.map((t) => [t.id, t])); const current = (t: Task | undefined, depth = 0): boolean => !!t && depth < 50 && (mine.has(t.id) || current(t.parent ? byId.get(t.parent) : undefined, depth + 1)); return tasks.filter((t) => current(t)); }
 		return tasks.filter((t) => !t.completed);
 	}
 
@@ -167,13 +200,12 @@ export default function taskPanel(pi: ExtensionAPI) {
 		if (collapsed) lines.push(theme.fg("dim", "  ctrl+shift+t to expand"));
 		else if (!list.length) lines.push(theme.fg("dim", view === "current" ? "  No tasks worked on in this session yet" : "  None"));
 		else {
-			const tasks = list;
-			for (const task of tasks.slice(0, 11)) {
+			for (const task of list.slice(0, 11)) {
 				const glyph = task.completed ? theme.fg("success", "✓") : task.started_at ? theme.fg("warning", "◐") : theme.fg("dim", "○");
 				const name = task.name.replace(/\s+/g, " ").trim();
 				lines.push(`  ${glyph} ${theme.fg("dim", `#${task.id}`)} ${task.completed ? theme.strikethrough(theme.fg("muted", name)) : name}`);
 			}
-			if (tasks.length > 11) lines.push(theme.fg("dim", `  +${tasks.length - 11} more`));
+			if (list.length > 11) lines.push(theme.fg("dim", `  +${list.length - 11} more`));
 		}
 		return lines.map((line) => truncateToWidth(line, width, "…"));
 	}
@@ -206,6 +238,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 			if (action === "create" && !name?.trim()) throw new Error("create requires a name");
 			if (["start", "complete", "edit"].includes(action) && !id?.trim()) throw new Error(`${action} requires an id`);
 			if (action === "edit" && name === undefined && description === undefined) throw new Error("edit requires a name or description");
+			if (name !== undefined && (action === "create" || action === "edit")) checkName(name);
 			let args: string[];
 			if (action === "list") args = ["list", "--all", "--json"];
 			else if (action === "create") args = ["create", name!, ...(description !== undefined ? ["--description", description] : []), ...(parent ? ["--parent", parent] : [])];
@@ -215,7 +248,8 @@ export default function taskPanel(pi: ExtensionAPI) {
 			const output = await run(ctx, args, signal);
 			if (id) track(id);
 			else if (action === "create" && parent && mine.has(parent)) { const m = output.match(/Created task (\S+)/); if (m) track(m[1]); }
-			await refresh(ctx);
+			// The change is already saved; a failed reload must not make the agent retry it.
+			try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); }
 			return { content: [{ type: "text", text: output }], details: {} };
 		},
 	});
@@ -226,7 +260,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 			try {
 				const want = String(args ?? "").trim();
 				if (want.startsWith("export ")) {
-					const path = resolve(ctx.cwd, want.slice(7).trim());
+					const path = resolve(ctx.cwd, home(want.slice(7).trim()));
 					const output = await run(ctx, ["export"]);
 					writeFileSync(path, output, { flag: "wx" });
 					ctx.ui.notify(`Exported tasks to ${path}`, "info");
@@ -241,19 +275,58 @@ export default function taskPanel(pi: ExtensionAPI) {
 	});
 	pi.registerShortcut("ctrl+shift+t", { description: "Toggle tasks", handler: async () => { collapsed = !collapsed; tui?.requestRender(); } });
 	pi.registerShortcut("ctrl+shift+v", { description: "Cycle task view (current/project/completed)", handler: async () => { view = views[(views.indexOf(view) + 1) % views.length]; tui?.requestRender(); } });
-	pi.on("session_start", async (_event, ctx) => { restore(ctx); try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); } });
-	pi.on("session_switch", async (_event, ctx) => { restore(ctx); try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); } });
+	// Live panel: reload when the task storage changes, so tasks other agents add show up right away.
+	let watchers: FSWatcher[] = [];
+	const unwatch = () => { for (const w of watchers) w.close(); watchers = []; };
+	async function watchStore(ctx: ExtensionContext) {
+		unwatch();
+		try {
+			const { backend, file: configuredFile } = settings(ctx);
+			let dirs: string[], only: string | undefined;
+			if (backend === "dex") {
+				const custom = storageArgs(ctx)[1];
+				if (custom) { mkdirSync(custom, { recursive: true }); dirs = [custom]; }
+				else {
+					// Ask Dex for its effective config: `dex dir` ignores storage.file.path and centralized mode.
+					const get = async (key: string) => { const v = (await pi.exec("dex", ["config", key], { cwd: ctx.cwd })).stdout.trim(); return v && v !== "(not set)" ? v : undefined; };
+					const engine = await get("storage.engine");
+					if (engine && engine !== "file") return; // non-file engines have nothing local to watch; panel keeps its event-based reloads
+					const path = await get("storage.file.path");
+					if (path) dirs = [resolve(ctx.cwd, home(path))];
+					// shortcut: watches every project's centralized store (slug comes from the git remote), so other projects' edits also trigger a reload.
+					else if ((await get("storage.file.mode")) === "centralized") dirs = [join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "dex", "projects")];
+					else dirs = [(await pi.exec("dex", ["dir"], { cwd: ctx.cwd })).stdout.trim()];
+				}
+			} else {
+				const id = createHash("sha256").update(ctx.sessionManager.getSessionId()).digest("hex");
+				const file = configuredFile ? resolve(ctx.cwd, home(configuredFile)) : join(tmpdir(), "pi-do", `${id}.jsonl`);
+				const dir = dirname(file); mkdirSync(dir, { recursive: true });
+				dirs = [dir]; only = file.slice(dir.length + 1);
+			}
+			let timer: ReturnType<typeof setTimeout> | undefined;
+			for (const dir of dirs) {
+				if (!dir || !existsSync(dir)) continue;
+				// Watch the folder, not the file: saves replace the file by rename.
+				const w = watch(dir, { recursive: backend === "dex" }, (_e, name) => {
+					if (only && name !== only) return;
+					clearTimeout(timer);
+					timer = setTimeout(() => { refresh(ctx).catch(() => {}); }, 200);
+				});
+				w.on("error", () => w.close());
+				watchers.push(w);
+			}
+		} catch {}
+	}
+	pi.on("session_shutdown", async () => unwatch());
+	pi.on("session_start", async (_event, ctx) => { void watchStore(ctx); restore(ctx); try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); } });
+	pi.on("session_switch", async (_event, ctx) => { void watchStore(ctx); restore(ctx); try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); } });
+	// Pick up tasks other agents added through Dex before each prompt.
+	pi.on("before_agent_start", async (_event, ctx) => { try { await refresh(ctx); } catch {} });
 	pi.on("tool_result", async (event, ctx) => {
 		if (event.isError) return;
 		try { if (settings(ctx).backend !== "dex") return; } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); return; }
+		// Only todo_task calls mark tasks as this session's; shell text can't prove what ran, so bash dex calls just refresh.
 		const command = event.toolName === "bash" ? String(event.input?.command ?? "") : "";
-		for (const m of command.matchAll(/\bdex\s+(?:start|complete|edit)\s+([\w-]+)/g)) track(m[1]);
-		// bash creates count only as subtasks of a current task; top-level creates are backlog until started.
-		const parent = command.match(/\bdex\s+create\b.*--parent[\s=]+["']?([\w-]+)/)?.[1];
-		if (parent && mine.has(parent) && !event.isError) {
-			const text = (event.content ?? []).map((c: any) => c.text ?? "").join("\n");
-			for (const m of text.matchAll(/Created task (\S+)/g)) track(m[1]);
-		}
 		if (/\bdex\b/.test(command) || /dex/i.test(event.toolName)) {
 			try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); }
 		}
