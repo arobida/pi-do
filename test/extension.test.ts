@@ -2,6 +2,7 @@ import { expect, mock, test } from "bun:test";
 
 mock.module("@earendil-works/pi-tui", () => ({ truncateToWidth: (text: string) => text }));
 mock.module("@earendil-works/pi-coding-agent", () => ({ getAgentDir: () => process.env.PI_CODING_AGENT_DIR || `${process.env.HOME}/.pi/agent` }));
+process.env.PI_DO_HOME = (await import("node:fs")).mkdtempSync(`${(await import("node:os")).tmpdir()}/pi-do-home-`);
 const { default: extension } = await import("../src/index.ts");
 
 test("registers the existing tool, command, shortcuts, and lifecycle hooks", () => {
@@ -117,34 +118,109 @@ test.skipIf(!Bun.which("dex"))("Dex backend translates tasks and exports todo.tx
 });
 
 
-test("user and trusted project settings merge with environment overrides", async () => {
- const { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } = await import("node:fs");
+test("config.jsonl layers: global < project < env, scope picks storage", async () => {
+ const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = await import("node:fs");
  const { tmpdir } = await import("node:os");
  const { join } = await import("node:path");
- const dir = mkdtempSync(join(tmpdir(), "pi-do-settings-"));
- const env = { agent: process.env.PI_CODING_AGENT_DIR, backend: process.env.PI_DO_BACKEND, file: process.env.PI_DO_FILE };
- process.env.PI_CODING_AGENT_DIR = join(dir, "agent"); delete process.env.PI_DO_BACKEND; delete process.env.PI_DO_FILE;
+ const dir = mkdtempSync(join(tmpdir(), "pi-do-settings-")), cwd = join(dir, "proj"), root = join(dir, "home");
+ const env = { home: process.env.PI_DO_HOME, backend: process.env.PI_DO_BACKEND, file: process.env.PI_DO_FILE, scope: process.env.PI_DO_SCOPE };
+ process.env.PI_DO_HOME = root; delete process.env.PI_DO_BACKEND; delete process.env.PI_DO_FILE; delete process.env.PI_DO_SCOPE;
  try {
-  mkdirSync(join(dir, "agent")); mkdirSync(join(dir, ".pi"));
-  writeFileSync(join(dir, "agent", "settings.json"), JSON.stringify({ piDo: { backend: "file", file: "user.jsonl" } }));
-  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ piDo: { file: "project.jsonl" } }));
-  let tool: any; let trusted = true; let dexCalls = 0;
-  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, on() {}, appendEntry() {}, exec: async () => { dexCalls++; return { code: 0, stdout: "[]", stderr: "" }; } } as any);
-  const ctx = { cwd: dir, hasUI: false, isProjectTrusted: () => trusted, sessionManager: { getSessionId: () => "session" } };
-  const create = () => tool.execute("call", { action: "create", name: "task" }, undefined, undefined, ctx);
-  await create(); expect(existsSync(join(dir, "project.jsonl"))).toBe(true);
-  trusted = false; await create(); expect(existsSync(join(dir, "user.jsonl"))).toBe(true);
-  trusted = true; process.env.PI_DO_FILE = "env.jsonl"; await create(); expect(existsSync(join(dir, "env.jsonl"))).toBe(true);
-  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ piDo: { backend: "dex" } }));
-  await tool.execute("call", { action: "list" }, undefined, undefined, ctx); expect(dexCalls).toBeGreaterThan(0);
-  process.env.PI_DO_BACKEND = "file"; const calls = dexCalls;
-  await tool.execute("call", { action: "list" }, undefined, undefined, ctx); expect(dexCalls).toBe(calls);
-  writeFileSync(join(dir, ".pi", "settings.json"), JSON.stringify({ piDo: { backend: "invalid" } }));
-  await expect(create()).rejects.toThrow("Invalid piDo.backend");
+  mkdirSync(cwd); mkdirSync(root);
+  let tool: any, command: any; let trusted = true; let dexCalls = 0;
+  extension({ registerTool: (t: any) => tool = t, registerCommand: (_n: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {}, exec: async () => { dexCalls++; return { code: 0, stdout: "[]", stderr: "" }; } } as any);
+  const notes: string[] = [];
+  const ctx = { cwd, hasUI: false, isProjectTrusted: () => trusted, ui: { notify: (m: string) => notes.push(m) }, sessionManager: { getSessionId: () => "session" } };
+  const list = async () => JSON.parse((await tool.execute("call", { action: "list" }, undefined, undefined, ctx)).content[0].text);
+  // Trusted project without .agents: .pi-do with config, list index and Hello World.
+  expect((await list()).map((t: any) => t.name)).toEqual(["Hello World"]);
+  expect(existsSync(join(cwd, ".pi-do", "config.jsonl"))).toBe(true);
+  expect(existsSync(join(root, "config.jsonl"))).toBe(true);
+  expect(JSON.parse(readFileSync(join(root, "projects", "projects.jsonl"), "utf8"))).toMatchObject({ name: "proj", path: cwd, scope: "project" });
+  expect(existsSync(join(cwd, ".pi-do", "todos", "proj.todos.jsonl"))).toBe(true);
+  expect(JSON.parse(readFileSync(join(cwd, ".pi-do", "todos", "lists.jsonl"), "utf8"))).toMatchObject({ name: "proj", file: "proj.todos.jsonl", id: expect.any(String), created: expect.any(String) });
+  // .agents alone does not switch stores; /todos migrate moves .pi-do into .agents/pi-do with its todos.
+  mkdirSync(join(cwd, ".agents")); await list(); expect(existsSync(join(cwd, ".agents", "pi-do"))).toBe(false);
+  const names = async () => (await list()).map((t: any) => t.name);
+  await command.handler("migrate .agents/pi-do", ctx);
+  expect(existsSync(join(cwd, ".pi-do"))).toBe(false); expect(await names()).toEqual(["Hello World"]);
+  expect(existsSync(join(cwd, ".agents", "pi-do", "todos", "proj.todos.jsonl"))).toBe(true);
+  await command.handler("migrate .agents/pi-do", ctx); expect(notes.at(-1)).toContain("Already stored");
+  await command.handler("migrate .pi-do", ctx); expect(await names()).toEqual(["Hello World"]);
+  // Every project is registered with its scope; project scope creates no global dir.
+  const reg = () => JSON.parse(readFileSync(join(root, "projects", "projects.jsonl"), "utf8"));
+  const project = reg();
+  const pid = project.id, pdir = join(root, "projects", `proj.${pid}`);
+  expect(project).toMatchObject({ name: "proj", path: cwd, scope: "project", id: expect.any(String) });
+  expect(existsSync(pdir)).toBe(false);
+  // Scope switch moves todos to the global <name>.<id> dir; the local config keeps the id that links them.
+  expect(JSON.parse(readFileSync(join(cwd, ".pi-do", "config.jsonl"), "utf8"))).toEqual({ id: pid });
+  await tool.execute("c", { action: "create", name: "carried" }, undefined, undefined, ctx);
+  await command.handler("scope global", ctx);
+  expect(reg()).toMatchObject({ id: pid, scope: "global" });
+  expect(existsSync(join(cwd, ".pi-do", "todos"))).toBe(false);
+  expect(existsSync(join(cwd, ".pi-do", "config.jsonl"))).toBe(true);
+  expect(existsSync(join(pdir, "todos", "proj.todos.jsonl"))).toBe(true);
+  expect(existsSync(join(pdir, "config.jsonl"))).toBe(true);
+  expect(await names()).toEqual(["Hello World", "carried"]);
+  // Matched by id, not path: a renamed project folder finds the same record.
+  const { renameSync } = await import("node:fs");
+  const moved = join(dir, "renamed"); renameSync(cwd, moved); (ctx as any).cwd = moved;
+  expect(await names()).toEqual(["Hello World", "carried"]);
+  renameSync(moved, cwd); (ctx as any).cwd = cwd;
+  await command.handler("scope project", ctx);
+  expect(existsSync(pdir)).toBe(false); expect(reg().scope).toBe("project");
+  expect(await names()).toEqual(["Hello World", "carried"]);
+  await command.handler("scope global", ctx);
+  await command.handler("migrate .agents/pi-do", ctx); expect(notes.at(-1)).toContain("use /todos scope");
+  trusted = false; await command.handler("scope project", ctx); expect(notes.at(-1)).toContain("trusted"); trusted = true;
+  // Project config overrides global config; env overrides both.
+  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ backend: "file" }) + "\n");
+  writeFileSync(join(pdir, "config.jsonl"), JSON.stringify({ backend: "dex" }) + "\n");
+  await list(); expect(dexCalls).toBeGreaterThan(0);
+  process.env.PI_DO_BACKEND = "file"; const calls = dexCalls; await list(); expect(dexCalls).toBe(calls);
+  // --global export/import targets the global store explicitly.
+  await command.handler("export out.txt --global", ctx);
+  expect(readFileSync(join(cwd, "out.txt"), "utf8")).toMatch(/^Hello World piid:/);
+  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ backend: "nope" }) + "\n");
+  await expect(list()).rejects.toThrow("Invalid backend");
  } finally {
-  for (const [key, value] of Object.entries({ PI_CODING_AGENT_DIR: env.agent, PI_DO_BACKEND: env.backend, PI_DO_FILE: env.file })) {
+  for (const [key, value] of Object.entries({ PI_DO_HOME: env.home, PI_DO_BACKEND: env.backend, PI_DO_FILE: env.file, PI_DO_SCOPE: env.scope })) {
    if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
+  rmSync(dir, { recursive: true, force: true });
+ }
+});
+
+test("todo.txt <-> JSONL is 1:1: export then import reproduces the store byte for byte", async () => {
+ const { mkdtempSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
+ const { tmpdir } = await import("node:os");
+ const { join } = await import("node:path");
+ const dir = mkdtempSync(join(tmpdir(), "pi-do-map-"));
+ const prev = process.env.PI_DO_FILE;
+ try {
+  let tool: any, command: any;
+  extension({ registerTool: (t: any) => tool = t, registerCommand: (_n: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {} } as any);
+  const ctx = { cwd: dir, hasUI: false, isProjectTrusted: () => true, ui: { notify() {} }, sessionManager: { getSessionId: () => "s" } };
+  const todoTxt = ["(A) 2024-01-01 Call Mom +Family @phone due:2024-02-01", "x 2024-01-03 2024-01-01 Done thing pri:B piid:abc", "Plain task with spaces  and ünïcödé"].join("\n") + "\n";
+  writeFileSync(join(dir, "in.txt"), todoTxt);
+  process.env.PI_DO_FILE = join(dir, "a.jsonl");
+  await command.handler("import in.txt", ctx);
+  expect(readFileSync(join(dir, "a.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l))).toEqual(todoTxt.trimEnd().split("\n").map((todo) => ({ todo })));
+  await command.handler("export out.txt", ctx);
+  expect(readFileSync(join(dir, "out.txt"), "utf8")).toBe(todoTxt);
+  await command.handler("import out.txt", ctx); // re-import is a no-op
+  expect(readFileSync(join(dir, "a.jsonl"), "utf8").trimEnd().split("\n")).toHaveLength(3);
+  process.env.PI_DO_FILE = join(dir, "b.jsonl");
+  await command.handler("import out.txt", ctx);
+  expect(readFileSync(join(dir, "b.jsonl"), "utf8")).toBe(readFileSync(join(dir, "a.jsonl"), "utf8"));
+  // Tool edits keep the mapping: what is exported is exactly what is stored.
+  const [task] = JSON.parse((await tool.execute("c", { action: "list" }, undefined, undefined, ctx)).content[0].text);
+  await tool.execute("c", { action: "complete", id: task.id }, undefined, undefined, ctx);
+  rmSync(join(dir, "out.txt")); await command.handler("export out.txt", ctx);
+  expect(readFileSync(join(dir, "out.txt"), "utf8")).toBe(readFileSync(join(dir, "b.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l).todo).join("\n") + "\n");
+ } finally {
+  if (prev === undefined) delete process.env.PI_DO_FILE; else process.env.PI_DO_FILE = prev;
   rmSync(dir, { recursive: true, force: true });
  }
 });

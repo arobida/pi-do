@@ -30,30 +30,41 @@ Until then, install from a local checkout (see [Contributing](CONTRIBUTING.md)).
 
 - Ask the agent to create, list, start, edit, or complete tasks using `todo_task`.
 - `/todos [current|project|completed]` selects and displays a view.
-- `/todos export <path>` exports the active backend to todo.txt, without overwriting an existing file.
+- `/todos export <path> [--global]` exports to todo.txt, without overwriting an existing file.
+- `/todos import <path> [--global]` appends todo.txt lines verbatim (file backend), skipping lines or `piid:`s already present.
+- `/todos migrate .pi-do|.agents/pi-do` moves the project-scope store folder (todos, config, index). Trusted projects only; refuses to overwrite.
+- `/todos scope project|global` switches scope and moves the `todos/` folder between the project folder (`.pi-do/` or `.agents/pi-do/`) and `~/.pi-do/projects/<name>.<id>/`. Refuses if the target already has todos. Trusted projects only.
+- `--global` targets this project's store under `~/.pi-do/projects/<name>.<id>/` instead of the active one.
 - `ctrl+shift+t` collapses or expands the panel.
 - `ctrl+shift+v` cycles views.
 
-Current shows tasks worked on in this session. Newly created top-level tasks remain in the project backlog until started. By default, tasks are stored in a temporary JSONL file keyed by Pi session ID, one `{"todo":"..."}` object per line. Each `todo` value is a [todo.txt](https://github.com/todotxt/todo.txt) task line; priorities, dates, `+projects` and `@contexts` can be included in the task name. pi-do stores its IDs, start times and optional fields in `piid:`, `pistart:`, `pidesc:`, `piparent:` and `piresult:` metadata tags. Temporary data may be removed by the OS. Set `PI_DO_FILE` to a persistent file path (relative paths are resolved against the project directory) to share tasks across sessions. Avoid concurrent writers to the same file.
+Current shows tasks worked on in this session. Newly created top-level tasks remain in the project backlog until started. Tasks are stored as JSONL, one `{"todo":"..."}` object per line. Each `todo` value is a [todo.txt](https://github.com/todotxt/todo.txt) task line; priorities, dates, `+projects` and `@contexts` can be included in the task name. pi-do stores its IDs, start times and optional fields in `piid:`, `pistart:`, `pidesc:`, `piparent:` and `piresult:` metadata tags. Each JSONL line maps 1:1 to a todo.txt line, so export/import round-trip exactly. Avoid concurrent writers to the same file.
+
+## Storage
+
+| Scope | Todos file |
+|---|---|
+| `project` (default, trusted projects) | `.pi-do/todos/<project>.todos.jsonl`, or `.agents/pi-do/...` if that exists |
+| `global` | `~/.pi-do/projects/<project>.<id>/todos/<project>.todos.jsonl` |
+| `temp` (and untrusted projects) | temporary file keyed by Pi session ID; may be removed by the OS |
+
+On first use pi-do creates the folder with an empty `config.jsonl`, a `todos/lists.jsonl` index (`id`, `name`, `file`, `created` per todos file) and a starter `Hello World` todo. Each project's id is stored in its local `config.jsonl` (which stays in the project in both scopes) and keys its record in `~/.pi-do/projects/projects.jsonl` (`id`, `name`, `path`, `scope`, `created`). `scope: "global"` projects keep their store in `~/.pi-do/projects/<name>.<id>/`; `project` scope creates no global folder. `<project>` is the working directory's name.
 
 To use the optional Dex integration instead, install `dex` on PATH and select the `dex` backend (see Configuration). Dex uses its configured storage when available, or temporary session storage otherwise. Completing a Dex task uses `--no-commit`. Dex remains the source of truth when selected; existing Dex tasks are not copied to the file backend. Dex names carry todo.txt priority, projects and contexts as text. On listing and export, pi-do translates Dex IDs, description, parent, start time, result and completion date into todo.txt metadata and completion markers. Dex's numeric priority and other Dex-specific fields are not translated. Files created by earlier versions (plain todo.txt or the previous JSON-lines format) must be migrated manually; pi-do rejects them rather than overwriting them. For a plain todo.txt file, wrap each task line as a JSON object with a `todo` string property.
 
 ## Configuration
 
-Add a `piDo` object to Pi's user settings (`~/.pi/agent/settings.json`, or `$PI_CODING_AGENT_DIR/settings.json`) or trusted project settings (`.pi/settings.json`):
+`config.jsonl` files hold one JSON object of options per line (later lines win): `~/.pi-do/config.jsonl` (global) < the project's pi-do `config.jsonl` < environment (`PI_DO_BACKEND`, `PI_DO_FILE`, `PI_DO_SCOPE`). `PI_DO_HOME` moves `~/.pi-do`.
 
 ```json
-{
-  "piDo": {
-    "backend": "file",
-    "file": ".pi/tasks.jsonl"
-  }
-}
+{"backend": "file", "scope": "project"}
 ```
 
-`backend` is `file` (default) or `dex`. `file` is optional; omit it for temporary session storage. Absolute paths and `~/` are supported; relative file paths resolve from Pi's working directory, including when set in user settings. Project settings override user settings per field, and project settings are ignored when Pi does not trust the project. `PI_DO_BACKEND` and `PI_DO_FILE` override settings. Changing the backend or file selects a different task store; it does not migrate tasks. Run `/reload` after editing Pi settings.
+- `backend`: `file` (default) or `dex`.
+- `scope`: `project` (default), `global` or `temp`; read from the global config or `PI_DO_SCOPE`.
+- `file`: explicit todos file, overriding scope. `~/` supported; relative paths resolve from Pi's working directory.
 
-For example, set `{"piDo":{"backend":"dex"}}` in project settings to use Dex for that project while retaining the user-level file backend elsewhere. Invalid pi-do settings cause an error rather than silently selecting a different store.
+Changing backend, scope or file selects a different store; it does not migrate tasks (use export/import). Invalid config causes an error rather than silently selecting a different store. Run `/reload` after editing config.
 
 ## Development
 
