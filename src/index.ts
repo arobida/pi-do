@@ -91,7 +91,7 @@ function readConfig(path: string): { backend?: string; file?: string; scope?: st
 
 const piDoHome = () => process.env.PI_DO_HOME || join(homedir(), ".pi-do");
 
-interface Settings { backend: string; file?: string; scope: string; base?: string; local: string; name: string; id: string; registered: boolean }
+interface Settings { backend: string; file?: string; scope: string; base: string; local: string; name: string; id: string; registered: boolean }
 
 const localDir = (cwd: string) => join(cwd, existsSync(join(cwd, ".agents", "pi-do")) ? ".agents/pi-do" : ".pi-do");
 const globalDir = (s: { name: string; id: string }) => join(piDoHome(), "projects", `${s.name}.${s.id}`);
@@ -108,30 +108,34 @@ function settings(ctx: ExtensionContext, forceGlobal = false): Settings {
 	if (!["project", "global", "temp"].includes(scope)) throw new Error(`Invalid pi-do scope: ${scope}`);
 	const name = record?.name ?? basename(cwd);
 	// Untrusted projects keep the temporary session file so pi-do never writes into them.
-	const base = !trusted && !forceGlobal ? undefined : scope === "global" ? globalDir({ name, id }) : scope === "project" ? local : undefined;
+	const temp = !trusted && !forceGlobal || scope === "temp";
+	// Temp stores use the same layout as project stores, in a per-session folder.
+	const base = temp ? join(tmpdir(), "pi-do", createHash("sha256").update(ctx.sessionManager.getSessionId()).digest("hex"), ".pi-do") : scope === "global" ? globalDir({ name, id }) : local;
 	const config = { ...globalConfig, ...(base ? readConfig(join(base, "config.jsonl")) : {}) };
-	return { backend: process.env.PI_DO_BACKEND || config.backend || "file", file: process.env.PI_DO_FILE || config.file, scope, base, local, name, id, registered: !!record };
+	return { backend: process.env.PI_DO_BACKEND || config.backend || "file", file: process.env.PI_DO_FILE || config.file, scope: temp ? "temp" : scope, base, local, name, id, registered: !!record };
 }
 
 const helloWorld = () => JSON.stringify({ todo: todoLine({ id: randomUUID(), name: "Hello World", completed: false, started_at: null }, undefined) }) + "\n";
 
 // Resolves the todos file, creating the pi-do folder, config, list index, project registration and Hello World todo on first use.
 function storeFile(ctx: ExtensionContext, s: Settings): string {
-	// ~/.pi-do always exists: global config plus the projects registry.
+	// ~/.pi-do always exists: global config plus the projects registry. Its absence means this run is the installation.
+	const installing = !existsSync(join(piDoHome(), "config.jsonl"));
 	mkdirSync(join(piDoHome(), "projects"), { recursive: true });
 	for (const f of [join(piDoHome(), "config.jsonl"), join(piDoHome(), "projects", "projects.jsonl")]) if (!existsSync(f)) writeFileSync(f, "");
 	if (s.file) return resolve(ctx.cwd, home(s.file));
-	if (!s.base) return join(tmpdir(), "pi-do", `${createHash("sha256").update(ctx.sessionManager.getSessionId()).digest("hex")}.jsonl`);
 	const todos = join(s.base, "todos"), file = join(todos, `${s.name}.todos.jsonl`);
-	if (!readConfig(join(s.local, "config.jsonl")).id) { mkdirSync(s.local, { recursive: true }); appendFileSync(join(s.local, "config.jsonl"), JSON.stringify({ id: s.id }) + "\n"); }
-	if (!s.registered) {
+	// Temp stores never write into the project or the registry.
+	if (s.scope !== "temp" && !readConfig(join(s.local, "config.jsonl")).id) { mkdirSync(s.local, { recursive: true }); appendFileSync(join(s.local, "config.jsonl"), JSON.stringify({ id: s.id }) + "\n"); }
+	if (!s.registered && s.scope !== "temp") {
 		appendFileSync(join(piDoHome(), "projects", "projects.jsonl"), JSON.stringify({ id: s.id, name: s.name, path: resolve(ctx.cwd), scope: s.scope, created: new Date().toISOString() }) + "\n");
 		s.registered = true;
 	}
 	if (existsSync(file)) return file;
 	mkdirSync(todos, { recursive: true });
 	if (!existsSync(join(s.base, "config.jsonl"))) writeFileSync(join(s.base, "config.jsonl"), "");
-	try { writeFileSync(file, helloWorld(), { flag: "wx", mode: 0o600 }); }
+	// Hello World onboards installation and new permanent stores; other temp stores start empty.
+	try { writeFileSync(file, s.scope === "temp" && !installing ? "" : helloWorld(), { flag: "wx", mode: 0o600 }); }
 	catch (error: any) { if (error.code === "EEXIST") return file; throw error; }
 	const created = new Date().toISOString();
 	appendFileSync(join(todos, "lists.jsonl"), JSON.stringify({ id: randomUUID(), name: s.name, file: basename(file), created }) + "\n");
@@ -142,7 +146,7 @@ function storeFile(ctx: ExtensionContext, s: Settings): string {
 function migrate(ctx: ExtensionContext, target: string): string {
 	if (!ctx.isProjectTrusted()) throw new Error("migrate requires a trusted project");
 	const s = settings(ctx);
-	if (s.scope !== "project" || !s.base || s.file) throw new Error("migrate only moves a project-scope pi-do folder; use /todos scope to change scope");
+	if (s.scope !== "project" || s.file) throw new Error("migrate only moves a project-scope pi-do folder; use /todos scope to change scope");
 	const to = join(resolve(ctx.cwd), target);
 	if (to === s.base) throw new Error(`Already stored in ${to}`);
 	if (existsSync(to)) throw new Error(`${to} already exists`);

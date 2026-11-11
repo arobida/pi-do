@@ -174,6 +174,23 @@ test("config.jsonl layers: global < project < env, scope picks storage", async (
   await command.handler("scope global", ctx);
   await command.handler("migrate .agents/pi-do", ctx); expect(notes.at(-1)).toContain("use /todos scope");
   trusted = false; await command.handler("scope project", ctx); expect(notes.at(-1)).toContain("trusted"); trusted = true;
+  const { createHash } = await import("node:crypto");
+  const tmpRoot0 = () => join(tmpdir(), "pi-do", createHash("sha256").update("session").digest("hex"));
+  // Untrusted: temp store with the same layout, nothing written into the project or registry.
+  const other = join(dir, "untrusted"); mkdirSync(other); (ctx as any).cwd = other; trusted = false;
+  rmSync(tmpRoot0(), { recursive: true, force: true });
+  const before = readFileSync(join(root, "projects", "projects.jsonl"), "utf8");
+  expect(await names()).toEqual([]);
+  expect(existsSync(join(other, ".pi-do"))).toBe(false);
+  expect(readFileSync(join(root, "projects", "projects.jsonl"), "utf8")).toBe(before);
+  const tmpRoot = tmpRoot0();
+  for (const f of ["config.jsonl", "todos/lists.jsonl", "todos/untrusted.todos.jsonl"]) expect(existsSync(join(tmpRoot, ".pi-do", f))).toBe(true);
+  // First run ever (no ~/.pi-do) onboards even a temp store.
+  const { renameSync: mv } = await import("node:fs");
+  rmSync(tmpRoot, { recursive: true }); mv(root, `${root}.bak`);
+  expect(await names()).toEqual(["Hello World"]); expect(existsSync(join(root, "config.jsonl"))).toBe(true);
+  rmSync(root, { recursive: true }); mv(`${root}.bak`, root);
+  rmSync(tmpRoot, { recursive: true }); (ctx as any).cwd = cwd; trusted = true;
   // Project config overrides global config; env overrides both.
   writeFileSync(join(root, "config.jsonl"), JSON.stringify({ backend: "file" }) + "\n");
   writeFileSync(join(pdir, "config.jsonl"), JSON.stringify({ backend: "dex" }) + "\n");

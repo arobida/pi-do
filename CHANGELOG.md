@@ -8,6 +8,7 @@
 - `/todos scope project|global` moves a project's todos to or from `~/.pi-do/projects/<name>.<id>/`.
 - `/todos migrate .pi-do|.agents/pi-do` moves the project store between folders. Trusted projects only.
 - `--global` on export/import targets the global store.
+- Temp and untrusted sessions use the same layout under `$TMPDIR/pi-do/<session-hash>/.pi-do/` and start empty; Hello World is added only on first install (no `~/.pi-do/` yet) or when a new permanent todos file is created.
 - Breaking: `config.jsonl` (global < project < `PI_DO_*` env) replaces the `piDo` block in Pi `settings.json`. New env vars `PI_DO_SCOPE`, `PI_DO_HOME`.
 
 ## 0.1.0
