@@ -11,7 +11,7 @@
     "tasks"
   ],
   "files": [
-    "src/index.ts",
+    "src/",
     "README.md",
     "CHANGELOG.md"
   ],

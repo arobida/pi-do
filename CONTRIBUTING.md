@@ -11,7 +11,14 @@ Issues and pull requests are welcome. Keep changes small and covered by tests.
 ## Project structure
 
 ```
-src/index.ts            Extension entry point: tool, commands, shortcuts, widget, backends
+src/index.ts            Extension entry point: tool, /todos command, shortcuts, panel, watcher
+src/todo.ts             Task type and todo.txt line parse/format/validation
+src/store.ts            Settings, scopes, store paths, project registry, migrate/scope moves
+src/util.ts             Shared helpers: ~ expansion, file lock, JSONL reader
+src/tasks.ts            Actions on the pi-do JSONL todos file (the one store)
+src/adapters/sync.ts    Adapter interface and 3-way two-way sync engine
+src/adapters/dex/       Dex adapter: CLI calls, Dex-to-Task mapping, watch folders
+src/adapters/things/    Things 3 adapter: URL scheme writes, JXA reads, auth token file
 test/extension.test.ts  Bun test suite
 CHANGELOG.md            Release notes
 ```

@@ -7,14 +7,14 @@ A standalone task panel for Pi. Exposes the `todo_task` tool and a widget above 
 - **Task panel widget** — live task list rendered above the editor; collapsible, with current/project/completed views.
 - **`todo_task` tool** — the agent can create, list, start, edit, and complete tasks on request.
 - **todo.txt format** — task lines support priorities, dates, `+projects` and `@contexts`; pi-do metadata travels in `piid:`, `pistart:` and related tags.
-- **Two storage backends** — a built-in JSONL file backend (temporary per-session by default, or a persistent file you choose) and an optional Dex integration via the `dex` CLI.
-- **Export** — dump the active backend to a plain todo.txt file with `/todos export <path>`.
+- **One store, synced adapters** — tasks live in pi-do's JSONL file; an optional Dex adapter syncs both ways via the `dex` CLI.
+- **Export** — dump the store to a plain todo.txt file with `/todos export <path>`.
 - **Live reload** — the panel watches task storage and refreshes when other agents change it.
 
 ## Requirements
 
 - Pi coding agent
-- Optional: `dex` on PATH for the Dex backend
+- Optional: `dex` on PATH for the Dex adapter
 
 ## Installation
 
@@ -31,7 +31,8 @@ Until then, install from a local checkout (see [Contributing](CONTRIBUTING.md)).
 - Ask the agent to create, list, start, edit, or complete tasks using `todo_task`.
 - `/todos [current|project|completed]` selects and displays a view.
 - `/todos export <path> [--global]` exports to todo.txt, without overwriting an existing file.
-- `/todos import <path> [--global]` appends todo.txt lines verbatim (file backend), skipping lines or `piid:`s already present.
+- `/todos import <path> [--global]` appends todo.txt lines verbatim, skipping lines or `piid:`s already present.
+- `/todos connect things <token>` saves the Things auth token (see the Things adapter docs).
 - `/todos migrate .pi-do|.agents/pi-do` moves the project-scope store folder (todos, config, index). Trusted projects only; refuses to overwrite.
 - `/todos scope project|global` switches scope and moves the `todos/` folder between the project folder (`.pi-do/` or `.agents/pi-do/`) and `~/.pi-do/projects/<name>.<id>/`. Refuses if the target already has todos. Trusted projects only.
 - `--global` targets this project's store under `~/.pi-do/projects/<name>.<id>/` instead of the active one.
@@ -50,21 +51,24 @@ Current shows tasks worked on in this session. Newly created top-level tasks rem
 
 On first use pi-do creates the folder with an empty `config.jsonl`, a `todos/lists.jsonl` index (`id`, `name`, `file`, `created` per todos file) and a starter `Hello World` todo (new permanent stores, and on the first run after install even if temp; otherwise temp stores start empty). Each project's id is stored in its local `config.jsonl` (which stays in the project in both scopes) and keys its record in `~/.pi-do/projects/projects.jsonl` (`id`, `name`, `path`, `scope`, `created`). `scope: "global"` projects keep their store in `~/.pi-do/projects/<name>.<id>/`; `project` scope creates no global folder. `<project>` is the working directory's name.
 
-To use the optional Dex integration instead, install `dex` on PATH and select the `dex` backend (see Configuration). Dex uses its configured storage when available, or temporary session storage otherwise. Completing a Dex task uses `--no-commit`. Dex remains the source of truth when selected; existing Dex tasks are not copied to the file backend. Dex names carry todo.txt priority, projects and contexts as text. On listing and export, pi-do translates Dex IDs, description, parent, start time, result and completion date into todo.txt metadata and completion markers. Dex's numeric priority and other Dex-specific fields are not translated. Files created by earlier versions (plain todo.txt or the previous JSON-lines format) must be migrated manually; pi-do rejects them rather than overwriting them. For a plain todo.txt file, wrap each task line as a JSON object with a `todo` string property.
+Adapters sync pi-do's store with other todo apps. Each has its own connect instructions, capabilities and limitations:
+
+- [Dex](src/adapters/dex/README.md)
+- [Things 3](src/adapters/things/README.md)
 
 ## Configuration
 
-`config.jsonl` files hold one JSON object of options per line (later lines win): `~/.pi-do/config.jsonl` (global) < the project's pi-do `config.jsonl` < environment (`PI_DO_BACKEND`, `PI_DO_FILE`, `PI_DO_SCOPE`). `PI_DO_HOME` moves `~/.pi-do`.
+`config.jsonl` files hold one JSON object of options per line (later lines win): `~/.pi-do/config.jsonl` (global) < the project's pi-do `config.jsonl` < environment (`PI_DO_FILE`, `PI_DO_SCOPE`). `PI_DO_HOME` moves `~/.pi-do`.
 
 ```json
-{"backend": "file", "scope": "project"}
+{"adapters": {"dex": {"sync": true}}, "scope": "project"}
 ```
 
-- `backend`: `file` (default) or `dex`.
+- `adapters`: per-adapter options; `dex` or `things`, each with `sync` (boolean).
 - `scope`: `project` (default), `global` or `temp`; read from the global config or `PI_DO_SCOPE`.
 - `file`: explicit todos file, overriding scope. `~/` supported; relative paths resolve from Pi's working directory.
 
-Changing backend, scope or file selects a different store; it does not migrate tasks (use export/import). Invalid config causes an error rather than silently selecting a different store. Run `/reload` after editing config.
+Changing scope or file selects a different store; it does not migrate tasks (use export/import). Invalid config causes an error rather than silently selecting a different store. Run `/reload` after editing config.
 
 ## Development
 

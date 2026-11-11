@@ -1,181 +1,15 @@
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
 import { truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { appendFileSync, cpSync, rmSync, existsSync, mkdirSync, watch, type FSWatcher, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir, homedir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
-import { createHash, randomUUID } from "node:crypto";
-
-interface Task {
-	id: string;
-	name: string;
-	completed: boolean;
-	started_at: string | null;
-	description?: string;
-	parent?: string;
-	result?: string;
-}
-
-function parseTodo(line: string, index: number): Task {
-	const meta: Record<string, string> = {};
-	const body = line.replace(/(?:^|\s)(piid|pistart|pidesc|piparent|piresult):([^\s:]+)/g, (match, key, value) => {
-		try { meta[key] = decodeURIComponent(value); return ""; } catch { return match; }
-	}).trim();
-	const completed = /^x\s/.test(body);
-	return { id: meta.piid || `line-${index + 1}-${createHash("sha256").update(line).digest("hex").slice(0, 12)}`, name: completed ? body.replace(/^x\s+(?:\d{4}-\d{2}-\d{2}\s+)?/, "") : body, completed, started_at: meta.pistart || null, description: meta.pidesc, parent: meta.piparent, result: meta.piresult };
-}
-
-function todoLine(task: Task, date: string | undefined): string {
-	let name = task.name.trim();
-	if (task.completed && /^\([A-Z]\)\s/.test(name)) name = name.replace(/^\(([A-Z])\)\s+/, "") + ` pri:${name[1]}`;
-	const metadata = Object.entries({ piid: task.id, pistart: task.started_at, pidesc: task.description, piparent: task.parent, piresult: task.result })
-		.filter(([, value]) => typeof value === "string" && value !== "").map(([key, value]) => `${key}:${encodeURIComponent(value as string)}`);
-	return `${task.completed ? `x ${date} ` : ""}${name} ${metadata.join(" ")}`;
-}
-
-// Names are stored as todo.txt text, so reject what would read back differently or reach Dex as a flag.
-function checkName(name: string) {
-	if (/[\r\n]/.test(name) || !name.trim()) throw new Error("Task name must be a non-empty single line");
-	if (/^\s*x\s/.test(name)) throw new Error('Task name must not start with "x " (todo.txt completion marker)');
-	if (/^\s*-/.test(name)) throw new Error('Task name must not start with "-"');
-	if (/(?:^|\s)pi(?:id|start|desc|parent|result):/.test(name)) throw new Error("Task name must not contain pi-do metadata tokens (piid:, pistart:, pidesc:, piparent:, piresult:)");
-}
-
-const home = (path: string) => path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
-
-async function withLock<T>(file: string, fn: () => T): Promise<T> {
-	const lock = `${file}.lock`;
-	for (let i = 0; ; i++) {
-		try { writeFileSync(lock, String(process.pid), { flag: "wx" }); break; }
-		catch (error: any) {
-			if (error.code !== "EEXIST") throw error;
-			// shortcut: a crashed holder's lock is treated as stale after 10s; fine for interactive use.
-			try { if (Date.now() - statSync(lock).mtimeMs > 10_000) { unlinkSync(lock); continue; } } catch {}
-			if (i > 200) throw new Error(`Task file is locked: ${lock}`);
-			await new Promise((r) => setTimeout(r, 25));
-		}
-	}
-	try { return fn(); } finally { try { unlinkSync(lock); } catch {} }
-}
-
-function dexTodo(task: any): string {
-	if (typeof task.id !== "string" || typeof task.name !== "string" || typeof task.completed !== "boolean") throw new Error("Invalid Dex task");
-	const name = task.name.replace(/[\r\n]+/g, " ").trim();
-	if (!name) throw new Error(`Dex task ${task.id} has no name`);
-	const date = typeof task.completed_at === "string" && /^\d{4}-\d{2}-\d{2}/.test(task.completed_at) ? task.completed_at.slice(0, 10) : undefined;
-	if (task.completed && !date) throw new Error(`Dex task ${task.id} has no completion date`);
-	return todoLine({ ...task, name, parent: task.parent_id }, date);
-}
-
-function readJsonl(path: string): any[] {
-	let data: string;
-	try { data = readFileSync(path, "utf8"); }
-	catch (error: any) { if (error.code === "ENOENT") return []; throw new Error(`Cannot read ${path}: ${error.message}`); }
-	return data.split("\n").filter((line) => line.trim()).map((line, index) => {
-		let record: any;
-		try { record = JSON.parse(line); } catch { throw new Error(`Invalid JSON on line ${index + 1} of ${path}`); }
-		if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error(`Invalid record on line ${index + 1} of ${path}`);
-		return record;
-	});
-}
-
-// config.jsonl: each line is an object of options; later lines override earlier ones.
-function readConfig(path: string): { backend?: string; file?: string; scope?: string; id?: string } {
-	const config = Object.assign({}, ...readJsonl(path));
-	if (config.backend !== undefined && config.backend !== "file" && config.backend !== "dex") throw new Error(`Invalid backend in ${path}`);
-	if (config.file !== undefined && (typeof config.file !== "string" || !config.file.trim())) throw new Error(`Invalid file in ${path}`);
-	if (config.scope !== undefined && !["project", "global", "temp"].includes(config.scope)) throw new Error(`Invalid scope in ${path}`);
-	if (config.id !== undefined && (typeof config.id !== "string" || !/^[\w-]+$/.test(config.id))) throw new Error(`Invalid id in ${path}`);
-	return config;
-}
-
-const piDoHome = () => process.env.PI_DO_HOME || join(homedir(), ".pi-do");
-
-interface Settings { backend: string; file?: string; scope: string; base: string; local: string; name: string; id: string; registered: boolean }
-
-const localDir = (cwd: string) => join(cwd, existsSync(join(cwd, ".agents", "pi-do")) ? ".agents/pi-do" : ".pi-do");
-const globalDir = (s: { name: string; id: string }) => join(piDoHome(), "projects", `${s.name}.${s.id}`);
-
-// The project's id lives in its local config.jsonl (kept in place across scopes) and keys its projects.jsonl record.
-// Scope: env PI_DO_SCOPE > the project's record scope > global config.jsonl > "project".
-function settings(ctx: ExtensionContext, forceGlobal = false): Settings {
-	const root = piDoHome(), cwd = resolve(ctx.cwd), trusted = ctx.isProjectTrusted();
-	const local = localDir(cwd);
-	const id: string = (trusted ? readConfig(join(local, "config.jsonl")).id : undefined) ?? randomUUID();
-	const record = readJsonl(join(root, "projects", "projects.jsonl")).find((p) => p.id === id);
-	const globalConfig = readConfig(join(root, "config.jsonl"));
-	const scope = forceGlobal ? "global" : process.env.PI_DO_SCOPE || record?.scope || globalConfig.scope || "project";
-	if (!["project", "global", "temp"].includes(scope)) throw new Error(`Invalid pi-do scope: ${scope}`);
-	const name = record?.name ?? basename(cwd);
-	// Untrusted projects keep the temporary session file so pi-do never writes into them.
-	const temp = !trusted && !forceGlobal || scope === "temp";
-	// Temp stores use the same layout as project stores, in a per-session folder.
-	const base = temp ? join(tmpdir(), "pi-do", createHash("sha256").update(ctx.sessionManager.getSessionId()).digest("hex"), ".pi-do") : scope === "global" ? globalDir({ name, id }) : local;
-	const config = { ...globalConfig, ...(base ? readConfig(join(base, "config.jsonl")) : {}) };
-	return { backend: process.env.PI_DO_BACKEND || config.backend || "file", file: process.env.PI_DO_FILE || config.file, scope: temp ? "temp" : scope, base, local, name, id, registered: !!record };
-}
-
-const helloWorld = () => JSON.stringify({ todo: todoLine({ id: randomUUID(), name: "Hello World", completed: false, started_at: null }, undefined) }) + "\n";
-
-// Resolves the todos file, creating the pi-do folder, config, list index, project registration and Hello World todo on first use.
-function storeFile(ctx: ExtensionContext, s: Settings): string {
-	// ~/.pi-do always exists: global config plus the projects registry. Its absence means this run is the installation.
-	const installing = !existsSync(join(piDoHome(), "config.jsonl"));
-	mkdirSync(join(piDoHome(), "projects"), { recursive: true });
-	for (const f of [join(piDoHome(), "config.jsonl"), join(piDoHome(), "projects", "projects.jsonl")]) if (!existsSync(f)) writeFileSync(f, "");
-	if (s.file) return resolve(ctx.cwd, home(s.file));
-	const todos = join(s.base, "todos"), file = join(todos, `${s.name}.todos.jsonl`);
-	// Temp stores never write into the project or the registry.
-	if (s.scope !== "temp" && !readConfig(join(s.local, "config.jsonl")).id) { mkdirSync(s.local, { recursive: true }); appendFileSync(join(s.local, "config.jsonl"), JSON.stringify({ id: s.id }) + "\n"); }
-	if (!s.registered && s.scope !== "temp") {
-		appendFileSync(join(piDoHome(), "projects", "projects.jsonl"), JSON.stringify({ id: s.id, name: s.name, path: resolve(ctx.cwd), scope: s.scope, created: new Date().toISOString() }) + "\n");
-		s.registered = true;
-	}
-	if (existsSync(file)) return file;
-	mkdirSync(todos, { recursive: true });
-	if (!existsSync(join(s.base, "config.jsonl"))) writeFileSync(join(s.base, "config.jsonl"), "");
-	// Hello World onboards installation and new permanent stores; other temp stores start empty.
-	try { writeFileSync(file, s.scope === "temp" && !installing ? "" : helloWorld(), { flag: "wx", mode: 0o600 }); }
-	catch (error: any) { if (error.code === "EEXIST") return file; throw error; }
-	const created = new Date().toISOString();
-	appendFileSync(join(todos, "lists.jsonl"), JSON.stringify({ id: randomUUID(), name: s.name, file: basename(file), created }) + "\n");
-	return file;
-}
-
-// Moves the project store between .pi-do and .agents/pi-do (todos, config, list index); never overwrites.
-function migrate(ctx: ExtensionContext, target: string): string {
-	if (!ctx.isProjectTrusted()) throw new Error("migrate requires a trusted project");
-	const s = settings(ctx);
-	if (s.scope !== "project" || s.file) throw new Error("migrate only moves a project-scope pi-do folder; use /todos scope to change scope");
-	const to = join(resolve(ctx.cwd), target);
-	if (to === s.base) throw new Error(`Already stored in ${to}`);
-	if (existsSync(to)) throw new Error(`${to} already exists`);
-	mkdirSync(dirname(to), { recursive: true });
-	renameSync(s.base, to);
-	return `Moved ${s.base} to ${to}`;
-}
-
-// Switches scope and moves the todos folder with it; the local config.jsonl (holding the project id) stays put.
-function setScope(ctx: ExtensionContext, scope: string): string {
-	if (!ctx.isProjectTrusted()) throw new Error("scope requires a trusted project");
-	const s = settings(ctx), registry = join(piDoHome(), "projects", "projects.jsonl");
-	if (s.file) throw new Error("scope does not apply to an explicit file");
-	storeFile(ctx, s); // registers the project and writes its id if needed
-	const projects = readJsonl(registry);
-	const record = projects.find((p) => p.id === s.id)!;
-	if (record.scope === scope) return `Already ${scope} scope`;
-	const [from, to] = scope === "global" ? [s.local, globalDir(s)] : [globalDir(s), s.local];
-	if (existsSync(join(to, "todos"))) throw new Error(`${join(to, "todos")} already exists`);
-	mkdirSync(to, { recursive: true });
-	if (!existsSync(join(to, "config.jsonl"))) writeFileSync(join(to, "config.jsonl"), "");
-	// Copy then delete: project and home may be on different disks.
-	if (existsSync(join(from, "todos"))) { cpSync(join(from, "todos"), join(to, "todos"), { recursive: true, errorOnExist: true, force: false }); rmSync(join(from, "todos"), { recursive: true }); }
-	if (scope === "project") rmSync(from, { recursive: true, force: true });
-	record.scope = scope;
-	const temp = `${registry}.${randomUUID()}.tmp`;
-	writeFileSync(temp, projects.map((p) => JSON.stringify(p) + "\n").join("")); renameSync(temp, registry);
-	return `Scope set to ${scope}: ${storeFile(ctx, settings(ctx))}`;
-}
+import { existsSync, mkdirSync, watch, type FSWatcher, readFileSync, writeFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { checkName, type Task } from "./todo.ts";
+import { home } from "./util.ts";
+import { migrate, setScope, settings, storeFile } from "./store.ts";
+import { runFile } from "./tasks.ts";
+import { dexAdapter, dexWatchDirs } from "./adapters/dex/index.ts";
+import { sync, type Adapter } from "./adapters/sync.ts";
+import { saveThingsToken, thingsAdapter } from "./adapters/things/index.ts";
 
 export default function taskPanel(pi: ExtensionAPI) {
 	let tasks: Task[] = [];
@@ -194,102 +28,23 @@ export default function taskPanel(pi: ExtensionAPI) {
 	const views = ["current", "project", "completed"] as const;
 	let view: (typeof views)[number] = "current";
 	let tui: TUI | undefined;
-
-	function configured(cwd: string): boolean {
-		let dir = resolve(cwd);
-		while (true) {
-			if (existsSync(join(dir, ".dex", "config.toml"))) return true;
-			const parent = dirname(dir);
-			if (parent === dir) break;
-			dir = parent;
-		}
-		return existsSync(join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "dex", "dex.toml"));
-	}
-
-	function storageArgs(ctx: ExtensionContext): string[] {
-		if (configured(ctx.cwd)) return [];
-		const id = createHash("sha256").update(ctx.sessionManager.getSessionId()).digest("hex");
-		return ["--storage-path", join(tmpdir(), "pi-dex", id)];
-	}
-
-	async function dex(ctx: ExtensionContext, args: string[], signal?: AbortSignal): Promise<string> {
-		const result = await pi.exec("dex", [...storageArgs(ctx), ...args], { cwd: ctx.cwd, signal });
-		if (result.code !== 0) throw new Error(result.stderr || result.stdout || `dex exited ${result.code}`);
-		return result.stdout;
-	}
-
 	async function run(ctx: ExtensionContext, args: string[], signal?: AbortSignal, global = false): Promise<string> {
+		const s = settings(ctx, global), file = storeFile(ctx, s);
+		if (args[0] === "list") await syncAll(ctx, global);
+		const out = await runFile(file, args);
+		if (!["list", "export"].includes(args[0])) await syncAll(ctx, global);
+		return out;
+	}
+	// Adapters with sync on mirror the pi-do store; runs are chained so two syncs never interleave.
+	let syncing: Promise<void> = Promise.resolve();
+	function syncAll(ctx: ExtensionContext, global = false): Promise<void> {
 		const s = settings(ctx, global);
-		const { backend } = s;
-		if (backend === "dex") {
-			if (args[0] === "import") throw new Error("import requires the file backend");
-			if (args[0] !== "list" && args[0] !== "export") return dex(ctx, args, signal);
-			const data = JSON.parse(await dex(ctx, ["list", "--all", "--json"], signal));
-			if (!Array.isArray(data)) throw new Error("Invalid Dex task list");
-			if (args[0] === "export") { const lines = data.map(dexTodo); return lines.length ? lines.join("\n") + "\n" : ""; }
-			return JSON.stringify(data.map((t: any): Task => { dexTodo(t); return { id: t.id, name: t.name, completed: t.completed, started_at: t.started_at ?? null, description: t.description ?? undefined, parent: t.parent_id ?? undefined, result: t.result ?? undefined }; }));
-		}
-		if (backend !== "file") throw new Error(`Unknown pi-do backend: ${backend}`);
+		const make: Record<string, () => Adapter> = { dex: () => dexAdapter(pi, ctx), things: () => thingsAdapter(pi) };
 		const file = storeFile(ctx, s);
-		const [action, value] = args;
-		if (action !== "list" && action !== "export") mkdirSync(dirname(file), { recursive: true });
-		return action === "list" || action === "export" ? mutate() : withLock(file, mutate);
-		function mutate(): string {
-		let lines: string[] = [];
-		try {
-			const data = readFileSync(file, "utf8");
-			lines = data ? data.split("\n") : [];
-			if (lines.at(-1) === "") lines.pop();
-			lines = lines.map((line, index) => {
-				let record: any;
-				try { record = JSON.parse(line); } catch { throw new Error(`Invalid pi-do JSONL record on line ${index + 1}`); }
-				if (!record || typeof record !== "object" || Array.isArray(record) || Object.keys(record).length !== 1 || typeof record.todo !== "string" || !record.todo.trim() || /[\r\n]/.test(record.todo)) throw new Error(`Invalid pi-do JSONL record on line ${index + 1}`);
-				return record.todo;
-			});
-		} catch (error: any) { if (error.code !== "ENOENT") throw error; }
-		if (args[0] === "export") return lines.length ? lines.join("\n") + "\n" : "";
-		const items = lines.map(parseTodo);
-		if (action === "list") return JSON.stringify(items);
-		const save = () => { const temp = `${file}.${randomUUID()}.tmp`; writeFileSync(temp, lines.map((todo) => JSON.stringify({ todo })).join("\n") + "\n", { mode: 0o600 }); renameSync(temp, file); };
-		if (action === "import") {
-			// todo.txt lines are stored verbatim (1:1); skip lines already present or whose piid already exists.
-			const ids = new Set(items.map((item) => item.id));
-			let added = 0;
-			for (const line of value.split(/\r?\n/)) {
-				if (!line.trim() || lines.includes(line)) continue;
-				const task = parseTodo(line, lines.length);
-				if (ids.has(task.id)) continue;
-				ids.add(task.id); lines.push(line); added++;
-			}
-			if (added) save();
-			return `Imported ${added} tasks`;
+		for (const name of Object.keys(s.adapters).filter((n) => s.adapters[n].sync)) {
+			syncing = syncing.catch(() => {}).then(() => sync(file, s.base, make[name]())).catch((error) => { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${name} sync failed: ${error}`, "error"); });
 		}
-		// Walk option/value pairs by position so values that look like flags stay values.
-		const options: Record<string, string> = {};
-		for (let i = 2; i < args.length; i++) { if (args[i] === "--no-commit") continue; options[args[i]] = args[++i]; }
-		const option = (key: string): string | undefined => options[key];
-		let task: Task;
-		let index = items.length;
-		if (action === "create") {
-			const parent = option("--parent");
-			if (parent && !items.some((item) => item?.id === parent)) throw new Error(`Task not found: ${parent}`);
-			task = { id: randomUUID(), name: value, completed: false, started_at: null, description: option("--description"), parent };
-		} else {
-			index = items.findIndex((item) => item?.id === value);
-			const found = items[index];
-			if (!found) throw new Error(`Task not found: ${value}`);
-			task = found;
-			if (action === "start") task.started_at = new Date().toISOString();
-			else if (action === "complete") { task.completed = true; task.result = option("--result"); }
-			else if (action === "edit") { if (option("--name") !== undefined) task.name = option("--name")!; if (option("--description") !== undefined) task.description = option("--description"); }
-			else throw new Error(`Unknown action: ${action}`);
-		}
-		if (action === "create" || (action === "edit" && option("--name") !== undefined)) checkName(task.name);
-		const completionDate = lines[index]?.match(/^x\s+(\d{4}-\d{2}-\d{2})\s/)?.[1] || new Date().toISOString().slice(0, 10);
-		lines[index] = todoLine(task, completionDate);
-		save();
-		return action === "create" ? `Created task ${task.id}` : `${action}: ${task.id}`;
-		}
+		return syncing;
 	}
 
 	function shown(): Task[] {
@@ -331,7 +86,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo_task",
 		label: "Tasks",
-		description: "Manage tasks with list, create, start, complete, or edit. Storage defaults to a temporary session file; persistent file and Dex backends are configurable.",
+		description: "Manage tasks with list, create, start, complete, or edit. Storage defaults to a temporary session file; Dex can sync via the adapters config.",
 		parameters: Type.Object({
 			action: Type.Union([Type.Literal("list"), Type.Literal("create"), Type.Literal("start"), Type.Literal("complete"), Type.Literal("edit")]),
 			id: Type.Optional(Type.String({ description: "Task ID for start, complete, or edit" })),
@@ -362,12 +117,14 @@ export default function taskPanel(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("todos", {
-		description: "Show tasks or move todo.txt: /todos [current|project|completed|export <path>|import <path>|migrate .pi-do|.agents/pi-do|scope project|global] [--global]", 
+		description: "Show tasks or move todo.txt: /todos [current|project|completed|export <path>|import <path>|migrate .pi-do|.agents/pi-do|scope project|global|connect things <token>] [--global]", 
 		async handler(args, ctx) {
 			try {
 				let want = String(args ?? "").trim();
 				const global = /\s--global$/.test(want);
 				if (global) want = want.slice(0, -9).trim();
+				const conn = want.match(/^connect\s+things\s+(\S+)$/);
+				if (conn) { ctx.ui.notify(saveThingsToken(conn[1]), "info"); await refresh(ctx); return; }
 				const mig = want.match(/^migrate\s+(\.pi-do|\.agents\/pi-do)$/);
 				const sc = want.match(/^scope\s+(project|global)$/);
 				if (mig || sc) { ctx.ui.notify(mig ? migrate(ctx, mig[1]) : setScope(ctx, sc![1]), "info"); void watchStore(ctx); await refresh(ctx); return; }
@@ -395,39 +152,20 @@ export default function taskPanel(pi: ExtensionAPI) {
 		unwatch();
 		try {
 			const s = settings(ctx);
-			const { backend } = s;
-			let dirs: string[], only: string | undefined;
-			if (backend === "dex") {
-				const custom = storageArgs(ctx)[1];
-				if (custom) { mkdirSync(custom, { recursive: true }); dirs = [custom]; }
-				else {
-					// Ask Dex for its effective config: `dex dir` ignores storage.file.path and centralized mode.
-					const get = async (key: string) => { const v = (await pi.exec("dex", ["config", key], { cwd: ctx.cwd })).stdout.trim(); return v && v !== "(not set)" ? v : undefined; };
-					const engine = await get("storage.engine");
-					if (engine && engine !== "file") return; // non-file engines have nothing local to watch; panel keeps its event-based reloads
-					const path = await get("storage.file.path");
-					if (path) dirs = [resolve(ctx.cwd, home(path))];
-					// shortcut: watches every project's centralized store (slug comes from the git remote), so other projects' edits also trigger a reload.
-					else if ((await get("storage.file.mode")) === "centralized") dirs = [join(process.env.XDG_CONFIG_HOME || join(homedir(), ".config"), "dex", "projects")];
-					else dirs = [(await pi.exec("dex", ["dir"], { cwd: ctx.cwd })).stdout.trim()];
-				}
-			} else {
-				const file = storeFile(ctx, s);
-				const dir = dirname(file); mkdirSync(dir, { recursive: true });
-				dirs = [dir]; only = file.slice(dir.length + 1);
-			}
+			const file = storeFile(ctx, s);
+			const dir = dirname(file); mkdirSync(dir, { recursive: true });
 			let timer: ReturnType<typeof setTimeout> | undefined;
-			for (const dir of dirs) {
-				if (!dir || !existsSync(dir)) continue;
-				// Watch the folder, not the file: saves replace the file by rename.
-				const w = watch(dir, { recursive: backend === "dex" }, (_e, name) => {
-					if (only && name !== only) return;
-					clearTimeout(timer);
-					timer = setTimeout(() => { refresh(ctx).catch(() => {}); }, 200);
-				});
+			const later = (fn: () => Promise<unknown>) => { clearTimeout(timer); timer = setTimeout(() => { fn().catch(() => {}); }, 200); };
+			// Watch the folder, not the file: saves replace the file by rename.
+			const watchDir = (d: string, recursive: boolean, onChange: (name: string | null) => void) => {
+				if (!d || !existsSync(d)) return;
+				const w = watch(d, { recursive }, (_e, name) => onChange(name));
 				w.on("error", () => w.close());
 				watchers.push(w);
-			}
+			};
+			watchDir(dir, false, (name) => { if (name === file.slice(dir.length + 1)) later(() => refresh(ctx)); });
+			// Dex edits from other agents pull in through sync, which then rewrites the store and refreshes.
+			if (s.adapters.dex?.sync) for (const d of (await dexWatchDirs(pi, ctx)) ?? []) watchDir(d, true, () => later(() => syncAll(ctx)));
 		} catch {}
 	}
 	pi.on("session_shutdown", async () => unwatch());
@@ -437,7 +175,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 	pi.on("before_agent_start", async (_event, ctx) => { try { await refresh(ctx); } catch {} });
 	pi.on("tool_result", async (event, ctx) => {
 		if (event.isError) return;
-		try { if (settings(ctx).backend !== "dex") return; } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); return; }
+		try { if (!settings(ctx).adapters.dex?.sync) return; } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); return; }
 		// Only todo_task calls mark tasks as this session's; shell text can't prove what ran, so bash dex calls just refresh.
 		const command = event.toolName === "bash" ? String(event.input?.command ?? "") : "";
 		if (/\bdex\b/.test(command) || /dex/i.test(event.toolName)) {

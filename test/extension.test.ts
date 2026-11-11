@@ -43,8 +43,8 @@ test("file backend persists task operations without Dex", async () => {
  const { tmpdir } = await import("node:os");
  const { join } = await import("node:path");
  const dir = mkdtempSync(join(tmpdir(), "pi-do-test-"));
- const previous = { file: process.env.PI_DO_FILE, backend: process.env.PI_DO_BACKEND };
- process.env.PI_DO_FILE = join(dir, "tasks.jsonl"); delete process.env.PI_DO_BACKEND;
+ const previous = { file: process.env.PI_DO_FILE };
+ process.env.PI_DO_FILE = join(dir, "tasks.jsonl");
  try {
   let tool: any, command: any;
   extension({ registerTool: (t: any) => tool = t, registerCommand: (_name: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {}, exec() { throw new Error("Dex must not run"); } } as any);
@@ -80,41 +80,43 @@ test("file backend persists task operations without Dex", async () => {
   expect(readFileSync(process.env.PI_DO_FILE!, "utf8")).toBe("old todo.txt line\n");
  } finally {
   if (previous.file === undefined) delete process.env.PI_DO_FILE; else process.env.PI_DO_FILE = previous.file;
-  if (previous.backend === undefined) delete process.env.PI_DO_BACKEND; else process.env.PI_DO_BACKEND = previous.backend;
   rmSync(dir, { recursive: true, force: true });
  }
 });
 
-test.skipIf(!Bun.which("dex"))("Dex backend translates tasks and exports todo.txt", async () => {
- const previous = process.env.PI_DO_BACKEND; process.env.PI_DO_BACKEND = "dex";
+test.skipIf(!Bun.which("dex"))("Dex adapter syncs both ways", async () => {
+ const { mkdtempSync, writeFileSync, rmSync } = await import("node:fs");
+ const { tmpdir } = await import("node:os");
+ const { join } = await import("node:path");
+ const dir = mkdtempSync(join(tmpdir(), "pi-do-dex-test-")), store = join(dir, "store");
+ const prev = { home: process.env.PI_DO_HOME, file: process.env.PI_DO_FILE };
+ process.env.PI_DO_HOME = join(dir, "home"); process.env.PI_DO_FILE = join(dir, "tasks.jsonl");
+ (await import("node:fs")).mkdirSync(process.env.PI_DO_HOME, { recursive: true });
+ writeFileSync(join(process.env.PI_DO_HOME, "config.jsonl"), JSON.stringify({ adapters: { dex: { sync: true } } }) + "\n");
+ const dex = async (args: string[]) => { const p = Bun.spawn(["dex", "--storage-path", store, ...args], { stdout: "pipe", stderr: "pipe" }); const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); return { stdout, stderr, code }; };
  try {
-  const { mkdtempSync, readFileSync, rmSync } = await import("node:fs");
-  const { tmpdir } = await import("node:os");
-  const { join } = await import("node:path");
-  const dir = mkdtempSync(join(tmpdir(), "pi-do-dex-test-"));
-  try {
-   let tool: any, command: any;
-   extension({ registerTool: (t: any) => tool = t, registerCommand: (_name: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {}, exec: async (_cmd: string, args: string[]) => {
-    const action = args.findIndex((arg: string) => ["list", "create", "start", "edit", "complete"].includes(arg));
-    const proc = Bun.spawn(["dex", "--storage-path", join(dir, "store"), ...args.slice(action)], { stdout: "pipe", stderr: "pipe" });
-    const [stdout, stderr, code] = await Promise.all([new Response(proc.stdout).text(), new Response(proc.stderr).text(), proc.exited]);
-    return { stdout, stderr, code };
-   } } as any);
-   const ctx = { cwd: dir, hasUI: false, isProjectTrusted: () => true, ui: { notify() {} }, sessionManager: { getSessionId: () => "session" } };
-   const run = async (params: any) => (await tool.execute("call", params, undefined, undefined, ctx)).content[0].text;
-   const id = (await run({ action: "create", name: "(A) Call +Family @phone", description: "details" })).match(/Created task (\S+)/)[1];
-   await run({ action: "start", id });
-   await run({ action: "edit", id, name: "(A) Updated +Family @phone" });
-   let tasks = JSON.parse(await run({ action: "list" }));
-   expect(tasks[0]).toMatchObject({ id, name: "(A) Updated +Family @phone", description: "details", completed: false });
-   expect(tasks[0].started_at).toBeTruthy();
-   await run({ action: "complete", id, result: "done" });
-   tasks = JSON.parse(await run({ action: "list" }));
-   expect(tasks[0]).toMatchObject({ id, completed: true, result: "done" });
-   await command.handler("export todo.txt", ctx);
-   expect(readFileSync(join(dir, "todo.txt"), "utf8")).toMatch(/^x \d{4}-\d{2}-\d{2} Updated \+Family @phone pri:A piid:/);
-  } finally { rmSync(dir, { recursive: true, force: true }); }
- } finally { if (previous === undefined) delete process.env.PI_DO_BACKEND; else process.env.PI_DO_BACKEND = previous; }
+  let tool: any;
+  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, on() {}, appendEntry() {}, exec: async (_cmd: string, args: string[]) => dex(args[0] === "--storage-path" ? args.slice(2) : args) } as any);
+  const ctx = { cwd: dir, hasUI: false, isProjectTrusted: () => false, ui: { notify(m: string) { throw new Error(m); } }, sessionManager: { getSessionId: () => "dex-sync" } };
+  const run = async (params: any) => (await tool.execute("call", params, undefined, undefined, ctx)).content[0].text;
+  const remote = async () => JSON.parse((await dex(["list", "--all", "--json"])).stdout);
+  const id = (await run({ action: "create", name: "(A) Call +Family @phone", description: "details" })).split(" ").pop();
+  let [r] = await remote();
+  expect(r).toMatchObject({ name: "(A) Call +Family @phone", description: "details", completed: false });
+  await dex(["edit", r.id, "--name", "Renamed in dex"]);
+  await dex(["create", "From dex"]);
+  let tasks = JSON.parse(await run({ action: "list" }));
+  expect(tasks.map((t: any) => t.name)).toEqual(["Renamed in dex", "From dex"]);
+  expect(tasks[0].id).toBe(id);
+  await dex(["edit", r.id, "--name", "edited in dex"]);
+  await run({ action: "complete", id, result: "done" });
+  [r] = (await remote()).filter((t: any) => t.id === r.id);
+  expect(r).toMatchObject({ name: "edited in dex", completed: true, result: "done" });
+  expect(JSON.parse(await run({ action: "list" }))).toHaveLength(2);
+ } finally {
+  for (const [k, v] of Object.entries({ PI_DO_HOME: prev.home, PI_DO_FILE: prev.file })) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+  rmSync(dir, { recursive: true, force: true });
+ }
 });
 
 
@@ -123,8 +125,8 @@ test("config.jsonl layers: global < project < env, scope picks storage", async (
  const { tmpdir } = await import("node:os");
  const { join } = await import("node:path");
  const dir = mkdtempSync(join(tmpdir(), "pi-do-settings-")), cwd = join(dir, "proj"), root = join(dir, "home");
- const env = { home: process.env.PI_DO_HOME, backend: process.env.PI_DO_BACKEND, file: process.env.PI_DO_FILE, scope: process.env.PI_DO_SCOPE };
- process.env.PI_DO_HOME = root; delete process.env.PI_DO_BACKEND; delete process.env.PI_DO_FILE; delete process.env.PI_DO_SCOPE;
+ const env = { home: process.env.PI_DO_HOME, file: process.env.PI_DO_FILE, scope: process.env.PI_DO_SCOPE };
+ process.env.PI_DO_HOME = root; delete process.env.PI_DO_FILE; delete process.env.PI_DO_SCOPE;
  try {
   mkdirSync(cwd); mkdirSync(root);
   let tool: any, command: any; let trusted = true; let dexCalls = 0;
@@ -192,17 +194,21 @@ test("config.jsonl layers: global < project < env, scope picks storage", async (
   rmSync(root, { recursive: true }); mv(`${root}.bak`, root);
   rmSync(tmpRoot, { recursive: true }); (ctx as any).cwd = cwd; trusted = true;
   // Project config overrides global config; env overrides both.
-  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ backend: "file" }) + "\n");
-  writeFileSync(join(pdir, "config.jsonl"), JSON.stringify({ backend: "dex" }) + "\n");
+  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ adapters: { dex: { sync: true } } }) + "\n");
+  writeFileSync(join(pdir, "config.jsonl"), JSON.stringify({ adapters: { dex: { sync: false } } }) + "\n");
+  await list(); expect(dexCalls).toBe(0);
+  writeFileSync(join(pdir, "config.jsonl"), "");
   await list(); expect(dexCalls).toBeGreaterThan(0);
-  process.env.PI_DO_BACKEND = "file"; const calls = dexCalls; await list(); expect(dexCalls).toBe(calls);
+  writeFileSync(join(root, "config.jsonl"), "");
   // --global export/import targets the global store explicitly.
   await command.handler("export out.txt --global", ctx);
   expect(readFileSync(join(cwd, "out.txt"), "utf8")).toMatch(/^Hello World piid:/);
-  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ backend: "nope" }) + "\n");
-  await expect(list()).rejects.toThrow("Invalid backend");
+  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ backend: "dex" }) + "\n");
+  await expect(list()).rejects.toThrow("replaced by");
+  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ adapters: { nope: {} } }) + "\n");
+  await expect(list()).rejects.toThrow("Invalid adapters");
  } finally {
-  for (const [key, value] of Object.entries({ PI_DO_HOME: env.home, PI_DO_BACKEND: env.backend, PI_DO_FILE: env.file, PI_DO_SCOPE: env.scope })) {
+  for (const [key, value] of Object.entries({ PI_DO_HOME: env.home, PI_DO_FILE: env.file, PI_DO_SCOPE: env.scope })) {
    if (value === undefined) delete process.env[key]; else process.env[key] = value;
   }
   rmSync(dir, { recursive: true, force: true });
@@ -247,8 +253,8 @@ test("audit regressions: names, options, dates, refresh, export ~", async () => 
  const { tmpdir, homedir } = await import("node:os");
  const { join } = await import("node:path");
  const dir = mkdtempSync(join(tmpdir(), "pi-do-audit-"));
- const previous = { file: process.env.PI_DO_FILE, backend: process.env.PI_DO_BACKEND };
- process.env.PI_DO_FILE = join(dir, "tasks.jsonl"); delete process.env.PI_DO_BACKEND;
+ const previous = { file: process.env.PI_DO_FILE };
+ process.env.PI_DO_FILE = join(dir, "tasks.jsonl");
  try {
   let tool: any;
   extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, on() {}, appendEntry() {} } as any);
@@ -268,7 +274,6 @@ test("audit regressions: names, options, dates, refresh, export ~", async () => 
   expect(existsSync(`${process.env.PI_DO_FILE}.lock`)).toBe(false);
  } finally {
   if (previous.file === undefined) delete process.env.PI_DO_FILE; else process.env.PI_DO_FILE = previous.file;
-  if (previous.backend === undefined) delete process.env.PI_DO_BACKEND; else process.env.PI_DO_BACKEND = previous.backend;
   rmSync(dir, { recursive: true, force: true });
  }
 });
@@ -276,12 +281,62 @@ test("audit regressions: names, options, dates, refresh, export ~", async () => 
 test("current view shows subtasks of session tasks but not unrelated new tasks", async () => {
  let start: any, widget: any, tool: any;
  const tasks = [{ id: "a", name: "mine", completed: false, started_at: "t" }, { id: "b", name: "sub", completed: false, started_at: null, parent_id: "a" }, { id: "c", name: "subsub", completed: false, started_at: null, parent_id: "b" }, { id: "d", name: "unrelated", completed: false, started_at: null }];
- const prev = process.env.PI_DO_BACKEND; process.env.PI_DO_BACKEND = "dex";
+ const { mkdtempSync, writeFileSync } = await import("node:fs");
+ const prev = process.env.PI_DO_FILE; process.env.PI_DO_FILE = `${mkdtempSync(`${(await import("node:os")).tmpdir()}/pi-do-view-`)}/t.jsonl`;
+ const { todoLine } = await import("../src/todo.ts");
+ writeFileSync(process.env.PI_DO_FILE, tasks.map((t: any) => JSON.stringify({ todo: todoLine({ ...t, parent: t.parent_id }, undefined) })).join("\n") + "\n");
  try {
-  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, appendEntry() {}, exec: async () => ({ code: 0, stdout: JSON.stringify(tasks), stderr: "" }), on: (e: string, h: any) => { if (e === "session_start") start = h; } } as any);
+  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, appendEntry() {}, on: (e: string, h: any) => { if (e === "session_start") start = h; } } as any);
   const ctx = { cwd: process.cwd(), hasUI: true, isProjectTrusted: () => false, ui: { setWidget: (_k: string, f: any) => widget = f, notify() {} }, sessionManager: { getSessionId: () => "s", getEntries: () => [{ type: "custom", customType: "dex-current", data: { id: "a" } }] } };
   await start({}, ctx);
   const out = widget({ requestRender() {} }, { fg: (_c: string, x: string) => x, strikethrough: (x: string) => x }).render(200).join("\n");
   expect(out).toContain("subsub"); expect(out).toContain("sub"); expect(out).not.toContain("unrelated");
- } finally { if (prev === undefined) delete process.env.PI_DO_BACKEND; else process.env.PI_DO_BACKEND = prev; }
+ } finally { if (prev === undefined) delete process.env.PI_DO_FILE; else process.env.PI_DO_FILE = prev; }
+});
+
+test("sync: 3-way per field, pi-do wins conflicts, deletions never propagate", async () => {
+ const { mkdtempSync, rmSync } = await import("node:fs");
+ const { sync } = await import("../src/adapters/sync.ts");
+ const { runFile } = await import("../src/tasks.ts");
+ const dir = mkdtempSync(`${(await import("node:os")).tmpdir()}/pi-do-sync-`), file = `${dir}/t.jsonl`;
+ const remote = new Map<string, any>(); let n = 0;
+ const adapter = { name: "fake", list: async () => [...remote.values()].map((t) => ({ ...t })), create: async (t: any) => { const id = `r${n++}`; remote.set(id, { ...t, id }); return id; }, update: async (id: string, p: any) => { remote.set(id, { ...remote.get(id), ...Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) }); } };
+ try {
+  const id = (await runFile(file, ["create", "a", "--description", "d"]) as string).split(" ").pop()!;
+  await sync(file, dir, adapter);
+  const list = async () => JSON.parse(await runFile(file, ["list"]) as string);
+  await runFile(file, ["edit", id, "--name", "local"]);
+  remote.set("r0", { ...remote.get("r0"), name: "remote", description: "remote desc" });
+  await sync(file, dir, adapter);
+  expect((await list())[0]).toMatchObject({ name: "local", description: "remote desc" });
+  expect(remote.get("r0")).toMatchObject({ name: "local", description: "remote desc" });
+  remote.delete("r0"); await sync(file, dir, adapter);
+  expect(await list()).toHaveLength(1); expect(remote.size).toBe(0);
+ } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test.skipIf(process.platform !== "darwin")("Things adapter: writes via URL scheme with the saved token, reads via JXA", async () => {
+ const { thingsAdapter, saveThingsToken } = await import("../src/adapters/things/index.ts");
+ const todos: any[] = [], urls: string[] = [];
+ const exec = async (cmd: string, args: string[]) => {
+  if (cmd === "osascript") return { code: 0, stdout: JSON.stringify(todos), stderr: "" };
+  const url = new URL(args[1]); urls.push(args[1]);
+  const p = Object.fromEntries(url.searchParams);
+  if (url.pathname === "/add") todos.push({ id: "T1", name: p.title, notes: p.notes, status: p.completed === "true" ? "completed" : "open" });
+  else { const t = todos.find((x) => x.id === p.id); if (p["auth-token"] !== "tok") throw new Error("bad token"); if (p.notes !== undefined) t.notes = p.notes; if (p.completed) t.status = p.completed === "true" ? "completed" : "open"; }
+  return { code: 0, stdout: "", stderr: "" };
+ };
+ const prev = process.env.PI_DO_THINGS_TOKEN; delete process.env.PI_DO_THINGS_TOKEN;
+ try {
+  const a = thingsAdapter({ exec } as any);
+  await expect(a.create({ id: "x", name: "a b&c", description: "d", completed: false, started_at: null })).rejects.toThrow("token missing");
+  saveThingsToken("tok");
+  const { statSync } = await import("node:fs");
+  expect(statSync(`${process.env.PI_DO_HOME}/adapters/things.json`).mode & 0o777).toBe(0o600);
+  expect(todos).toHaveLength(0);
+  expect(await a.create({ id: "x", name: "a b&c", description: "d", completed: false, started_at: null })).toBe("T1");
+  expect(urls.some((u) => u.includes("title=a%20b%26c"))).toBe(true);
+  await a.update("T1", { completed: true });
+  expect(await a.list()).toEqual([{ id: "T1", name: "a b&c", description: "d", completed: true, started_at: null }]);
+ } finally { if (prev !== undefined) process.env.PI_DO_THINGS_TOKEN = prev; }
 });
