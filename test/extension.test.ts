@@ -317,18 +317,19 @@ test("sync: 3-way per field, pi-do wins conflicts, deletions never propagate", a
 
 test.skipIf(process.platform !== "darwin")("Things adapter: writes via URL scheme with the saved token, reads via JXA", async () => {
  const { thingsAdapter, saveThingsToken } = await import("../src/adapters/things/index.ts");
- const todos: any[] = [], urls: string[] = [];
+ const todos: any[] = [], urls: string[] = []; let project = false;
  const exec = async (cmd: string, args: string[]) => {
-  if (cmd === "osascript") return { code: 0, stdout: JSON.stringify(todos), stderr: "" };
+  if (cmd === "osascript") { expect(args.at(-1)).toBe("proj"); return { code: 0, stdout: project ? JSON.stringify(todos) : "null", stderr: "" }; }
   const url = new URL(args[1]); urls.push(args[1]);
   const p = Object.fromEntries(url.searchParams);
-  if (url.pathname === "/add") todos.push({ id: "T1", name: p.title, notes: p.notes, status: p.completed === "true" ? "completed" : "open" });
+  if (url.pathname === "/add-project") { expect(p.title).toBe("proj"); project = true; }
+  else if (url.pathname === "/add") expect(p.list).toBe("proj"), todos.push({ id: "T1", name: p.title, notes: p.notes, status: p.completed === "true" ? "completed" : "open" });
   else { const t = todos.find((x) => x.id === p.id); if (p["auth-token"] !== "tok") throw new Error("bad token"); if (p.notes !== undefined) t.notes = p.notes; if (p.completed) t.status = p.completed === "true" ? "completed" : "open"; }
   return { code: 0, stdout: "", stderr: "" };
  };
  const prev = process.env.PI_DO_THINGS_TOKEN; delete process.env.PI_DO_THINGS_TOKEN;
  try {
-  const a = thingsAdapter({ exec } as any);
+  const a = thingsAdapter({ exec } as any, "proj");
   await expect(a.create({ id: "x", name: "a b&c", description: "d", completed: false, started_at: null })).rejects.toThrow("token missing");
   saveThingsToken("tok");
   const { statSync } = await import("node:fs");

@@ -39,7 +39,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 	let syncing: Promise<void> = Promise.resolve();
 	function syncAll(ctx: ExtensionContext, global = false): Promise<void> {
 		const s = settings(ctx, global);
-		const make: Record<string, () => Adapter> = { dex: () => dexAdapter(pi, ctx), things: () => thingsAdapter(pi) };
+		const make: Record<string, () => Adapter> = { dex: () => dexAdapter(pi, ctx), things: () => thingsAdapter(pi, s.name) };
 		const file = storeFile(ctx, s);
 		for (const name of Object.keys(s.adapters).filter((n) => s.adapters[n].sync)) {
 			syncing = syncing.catch(() => {}).then(() => sync(file, s.base, make[name]())).catch((error) => { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${name} sync failed: ${error}`, "error"); });

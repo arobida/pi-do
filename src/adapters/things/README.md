@@ -19,6 +19,10 @@ Syncs pi-do's todo store with [Things 3](https://culturedcode.com/things/) on ma
 
 To disconnect, set `"sync": false` or remove the entry, and delete `~/.pi-do/adapters/things.json`. Tasks already synced stay on both sides.
 
+## Projects
+
+Each pi-do project syncs with the Things project of the same name (the project folder's name, or its name in `~/.pi-do/projects/projects.jsonl`). pi-do creates the Things project with the first new task. Only to-dos in that project sync; to-dos you move out of it stop syncing.
+
 ## Capabilities
 
 | Field | pi-do → Things | Things → pi-do |
@@ -35,7 +39,8 @@ To disconnect, set `"sync": false` or remove the entry, and delete `~/.pi-do/ada
 ## Limitations
 
 - macOS only.
-- The first sync pulls in every to-do Things returns, including the Logbook. Canceled to-dos are skipped.
+- Canceled to-dos are skipped.
+- Renaming either project breaks the match; pi-do then creates a new Things project.
 - Not synced: started time, result, parent/subtasks (Things has projects, headings and checklists rather than subtasks), and Things' when/deadline, tags, areas, projects, headings and checklists.
 - Deletions are never propagated in either direction.
 - The URL scheme does not return the new to-do's id to a command-line caller. pi-do tags the notes with a temporary `[pi-do:<id>]` marker, waits up to about 5 seconds to find the to-do, then removes the marker. If Things is slower than that, the sync fails and is retried; the retry can create a duplicate.

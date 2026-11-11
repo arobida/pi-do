@@ -24,9 +24,10 @@ function token(): string {
 // Marks a new to-do's notes so the next read can find its Things id (the URL scheme cannot return it to a CLI).
 const marker = /\n*\[pi-do:([\w-]+)\]\s*$/;
 // The URL scheme writes but cannot read, so reads go through Things' AppleScript dictionary (JXA).
-const LIST = `JSON.stringify(Application("Things3").toDos().map(t => ({ id: t.id(), name: t.name(), notes: t.notes(), status: t.status() })))`;
+// Each pi-do project syncs with the Things project of the same name; the name is passed as argv, never spliced into code.
+const LIST = `function run([name]) { const p = Application("Things3").projects.whose({ name })(); return p.length ? JSON.stringify(p[0].toDos().map(t => ({ id: t.id(), name: t.name(), notes: t.notes(), status: t.status() }))) : "null"; }`;
 
-export function thingsAdapter(pi: ExtensionAPI): Adapter {
+export function thingsAdapter(pi: ExtensionAPI, project: string): Adapter {
 	if (process.platform !== "darwin") throw new Error("Things adapter needs macOS");
 	const open = async (command: string, params: Record<string, string | undefined>) => {
 		const query = Object.entries(params).filter(([, v]) => v !== undefined).map(([k, v]) => `${k}=${encodeURIComponent(v!)}`).join("&");
@@ -34,9 +35,10 @@ export function thingsAdapter(pi: ExtensionAPI): Adapter {
 		if (r.code !== 0) throw new Error(r.stderr || `open exited ${r.code}`);
 	};
 	const read = async () => {
-		const r = await pi.exec("osascript", ["-l", "JavaScript", "-e", LIST]);
+		const r = await pi.exec("osascript", ["-l", "JavaScript", "-e", LIST, project]);
 		if (r.code !== 0) throw new Error(r.stderr || `osascript exited ${r.code}`);
 		const data = JSON.parse(r.stdout);
+		if (data === null) return null; // project not created yet
 		if (!Array.isArray(data)) throw new Error("Invalid Things to-do list");
 		return data as { id: string; name: string; notes: string; status: string }[];
 	};
@@ -44,15 +46,21 @@ export function thingsAdapter(pi: ExtensionAPI): Adapter {
 		name: "things",
 		fields: ["name", "description", "completed"],
 		async list() {
-			return (await read()).filter((t) => t.status !== "canceled" && t.name.trim()).map((t) => ({ id: t.id, name: t.name.replace(/[\r\n]+/g, " ").trim(), description: t.notes.replace(marker, "") || undefined, completed: t.status === "completed", started_at: null }));
+			return ((await read()) ?? []).filter((t) => t.status !== "canceled" && t.name.trim()).map((t) => ({ id: t.id, name: t.name.replace(/[\r\n]+/g, " ").trim(), description: t.notes.replace(marker, "") || undefined, completed: t.status === "completed", started_at: null }));
 		},
 		async create(task) {
 			const auth = token(); // fail before adding, so a missing token can't leave an unlinked to-do
 			const key = randomUUID();
-			await open("add", { title: task.name, notes: `${task.description ?? ""}\n\n[pi-do:${key}]`, completed: task.completed ? "true" : undefined });
+			if (!(await read())) {
+				await open("add-project", { title: project });
+				// Wait for the project, or the to-do below would land in the Inbox.
+				for (let i = 0; i < 20 && !(await read()); i++) await new Promise((r) => setTimeout(r, 250));
+				if (!(await read())) throw new Error(`Things did not create project "${project}"`);
+			}
+			await open("add", { list: project, title: task.name, notes: `${task.description ?? ""}\n\n[pi-do:${key}]`, completed: task.completed ? "true" : undefined });
 			// shortcut: polls up to ~5s for Things to save the new to-do; a slower Things fails this sync and retries later (possible duplicate).
 			for (let i = 0; i < 20; i++) {
-				const found = (await read()).find((t) => t.notes.match(marker)?.[1] === key);
+				const found = ((await read()) ?? []).find((t) => t.notes.match(marker)?.[1] === key);
 				if (found) { await open("update", { id: found.id, "auth-token": auth, notes: task.description ?? "" }); return found.id; }
 				await new Promise((r) => setTimeout(r, 250));
 			}

@@ -2,7 +2,7 @@
 
 ## Unreleased
 
-- Add Things 3 adapter (macOS): two-way sync of name, notes and completion via the Things URL scheme; `/todos connect things <token>` stores the auth token.
+- Add Things 3 adapter (macOS): each pi-do project syncs with a Things project of the same name; two-way sync of name, notes and completion via the Things URL scheme; `/todos connect things <token>` stores the auth token.
 - Replace backends with adapters: the pi-do file store always holds tasks; Dex becomes an adapter with two-way `sync` (`"adapters": {"dex": {"sync": true}}`). `backend` config and `PI_DO_BACKEND` are removed.
 - Default file backend stores todos in trusted projects at `.pi-do/` (or `.agents/pi-do/` if present): `config.jsonl`, `todos/lists.jsonl` index and `todos/<name>.todos.jsonl`, starting with a "Hello World" todo. Untrusted projects keep the temporary session file.
 - Each JSONL line maps 1:1 to a todo.txt line; new `/todos import <path>` complements export (skips duplicate lines and `piid:`s).
