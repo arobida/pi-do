@@ -6,7 +6,7 @@ import type { Task } from "../../todo.ts";
 import type { Adapter } from "../sync.ts";
 import { piDoHome } from "../../store.ts";
 
-// The auth token is a secret: kept in ~/.pi-do/adapters/things.json (0600), never in a config.jsonl that may be committed.
+// The auth token is a secret: kept in ~/.pi-do/adapters/things.json (0600), never in a config.json that may be committed.
 const tokenFile = () => join(piDoHome(), "adapters", "things.json");
 export function saveThingsToken(token: string): string {
 	if (!/^[\w-]+$/.test(token)) throw new Error("Invalid Things auth token");

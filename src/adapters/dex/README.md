@@ -6,7 +6,7 @@ Syncs pi-do's todo store with [Dex](https://github.com/dcramer/dex) through the 
 
 1. Install `dex` and make sure it is on `PATH` (`dex --version`).
 2. Optional: run `dex init` (global `~/.config/dex/dex.toml`) or add a project `.dex/config.toml` to choose where Dex stores tasks. Without either, pi-do uses temporary per-session Dex storage.
-3. Turn sync on in a pi-do `config.jsonl` (global `~/.pi-do/config.jsonl` or the project's):
+3. Turn sync on in a pi-do `config.json` (global `~/.pi-do/config.json` or the project's):
    ```json
    {"adapters": {"dex": {"sync": true}}}
    ```
@@ -27,7 +27,7 @@ To disconnect, set `"sync": false` or remove the entry. Tasks already synced sta
 
 - Two-way: each list or change in pi-do syncs both ways. Changes made in Dex by other agents are pulled when Dex's storage folder changes (file storage engine only), and before each prompt.
 - Conflicts: per field, a change on one side since the last sync is copied across. If both sides changed the same field, pi-do wins.
-- State: links and last-synced copies live in `sync/dex.jsonl` next to the store's `config.jsonl`.
+- State: links and last-synced copies live in `sync/dex.jsonl` next to the store's `config.json`.
 - Completing in Dex uses `--no-commit --force`.
 
 ## Limitations

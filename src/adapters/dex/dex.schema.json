@@ -1,0 +1,9 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "pi-do Dex adapter",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "sync": { "type": "boolean", "description": "Two-way sync pi-do todos with Dex tasks." }
+  }
+}

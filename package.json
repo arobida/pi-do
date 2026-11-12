@@ -12,6 +12,7 @@
   ],
   "files": [
     "src/",
+    "schema.json",
     "README.md",
     "CHANGELOG.md"
   ],

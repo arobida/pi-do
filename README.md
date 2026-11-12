@@ -49,7 +49,7 @@ Current shows tasks worked on in this session. Newly created top-level tasks rem
 | `global` | `~/.pi-do/projects/<project>.<id>/todos/<project>.todos.jsonl` |
 | `temp` (and untrusted projects) | same layout under `$TMPDIR/pi-do/<session-hash>/.pi-do/`; may be removed by the OS |
 
-On first use pi-do creates the folder with an empty `config.jsonl`, a `todos/lists.jsonl` index (`id`, `name`, `file`, `created` per todos file) and a starter `Hello World` todo (new permanent stores, and on the first run after install even if temp; otherwise temp stores start empty). Each project's id is stored in its local `config.jsonl` (which stays in the project in both scopes) and keys its record in `~/.pi-do/projects/projects.jsonl` (`id`, `name`, `path`, `scope`, `created`). `scope: "global"` projects keep their store in `~/.pi-do/projects/<name>.<id>/`; `project` scope creates no global folder. `<project>` is the working directory's name.
+On first use pi-do creates the folder with a `config.json`, a `todos/lists.jsonl` index (`id`, `name`, `file`, `created` per todos file) and a starter `Hello World` todo (new permanent stores, and on the first run after install even if temp; otherwise temp stores start empty). Each project's id is stored in its local `config.json` (which stays in the project in both scopes) and keys its record in `~/.pi-do/projects/projects.jsonl` (`id`, `name`, `path`, `scope`, `created`). `scope: "global"` projects keep their store in `~/.pi-do/projects/<name>.<id>/`; `project` scope creates no global folder. `<project>` is the working directory's name.
 
 Adapters sync pi-do's store with other todo apps. Each has its own connect instructions, capabilities and limitations:
 
@@ -58,7 +58,7 @@ Adapters sync pi-do's store with other todo apps. Each has its own connect instr
 
 ## Configuration
 
-`config.jsonl` files hold one JSON object of options per line (later lines win): `~/.pi-do/config.jsonl` (global) < the project's pi-do `config.jsonl` < environment (`PI_DO_FILE`, `PI_DO_SCOPE`). `PI_DO_HOME` moves `~/.pi-do`.
+`config.json` files are JSONC (comments and trailing commas allowed) and start with a `$schema` URL pinned to your installed version, so editors autocomplete and check every option ([`schema.json`](schema.json); each adapter's options are in `src/adapters/<name>/<name>.schema.json`). pi-do keeps that URL current when you upgrade, and converts an older `config.jsonl` automatically. Precedence: `~/.pi-do/config.json` (global) < the project's pi-do `config.json` < environment (`PI_DO_FILE`, `PI_DO_SCOPE`). `PI_DO_HOME` moves `~/.pi-do`.
 
 ```json
 {"adapters": {"dex": {"sync": true}}, "scope": "project"}

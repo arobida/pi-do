@@ -92,7 +92,7 @@ test.skipIf(!Bun.which("dex"))("Dex adapter syncs both ways", async () => {
  const prev = { home: process.env.PI_DO_HOME, file: process.env.PI_DO_FILE };
  process.env.PI_DO_HOME = join(dir, "home"); process.env.PI_DO_FILE = join(dir, "tasks.jsonl");
  (await import("node:fs")).mkdirSync(process.env.PI_DO_HOME, { recursive: true });
- writeFileSync(join(process.env.PI_DO_HOME, "config.jsonl"), JSON.stringify({ adapters: { dex: { sync: true } } }) + "\n");
+ writeFileSync(join(process.env.PI_DO_HOME, "config.json"), JSON.stringify({ adapters: { dex: { sync: true } } }) + "\n");
  const dex = async (args: string[]) => { const p = Bun.spawn(["dex", "--storage-path", store, ...args], { stdout: "pipe", stderr: "pipe" }); const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); return { stdout, stderr, code }; };
  try {
   let tool: any;
@@ -120,7 +120,7 @@ test.skipIf(!Bun.which("dex"))("Dex adapter syncs both ways", async () => {
 });
 
 
-test("config.jsonl layers: global < project < env, scope picks storage", async () => {
+test("config.json layers: global < project < env, scope picks storage", async () => {
  const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } = await import("node:fs");
  const { tmpdir } = await import("node:os");
  const { join } = await import("node:path");
@@ -136,8 +136,8 @@ test("config.jsonl layers: global < project < env, scope picks storage", async (
   const list = async () => JSON.parse((await tool.execute("call", { action: "list" }, undefined, undefined, ctx)).content[0].text);
   // Trusted project without .agents: .pi-do with config, list index and Hello World.
   expect((await list()).map((t: any) => t.name)).toEqual(["Hello World"]);
-  expect(existsSync(join(cwd, ".pi-do", "config.jsonl"))).toBe(true);
-  expect(existsSync(join(root, "config.jsonl"))).toBe(true);
+  expect(existsSync(join(cwd, ".pi-do", "config.json"))).toBe(true);
+  expect(existsSync(join(root, "config.json"))).toBe(true);
   expect(JSON.parse(readFileSync(join(root, "projects", "projects.jsonl"), "utf8"))).toMatchObject({ name: "proj", path: cwd, scope: "project" });
   expect(existsSync(join(cwd, ".pi-do", "todos", "proj.todos.jsonl"))).toBe(true);
   expect(JSON.parse(readFileSync(join(cwd, ".pi-do", "todos", "lists.jsonl"), "utf8"))).toMatchObject({ name: "proj", file: "proj.todos.jsonl", id: expect.any(String), created: expect.any(String) });
@@ -156,14 +156,14 @@ test("config.jsonl layers: global < project < env, scope picks storage", async (
   expect(project).toMatchObject({ name: "proj", path: cwd, scope: "project", id: expect.any(String) });
   expect(existsSync(pdir)).toBe(false);
   // Scope switch moves todos to the global <name>.<id> dir; the local config keeps the id that links them.
-  expect(JSON.parse(readFileSync(join(cwd, ".pi-do", "config.jsonl"), "utf8"))).toEqual({ id: pid });
+  expect(JSON.parse(readFileSync(join(cwd, ".pi-do", "config.json"), "utf8"))).toMatchObject({ id: pid });
   await tool.execute("c", { action: "create", name: "carried" }, undefined, undefined, ctx);
   await command.handler("scope global", ctx);
   expect(reg()).toMatchObject({ id: pid, scope: "global" });
   expect(existsSync(join(cwd, ".pi-do", "todos"))).toBe(false);
-  expect(existsSync(join(cwd, ".pi-do", "config.jsonl"))).toBe(true);
+  expect(existsSync(join(cwd, ".pi-do", "config.json"))).toBe(true);
   expect(existsSync(join(pdir, "todos", "proj.todos.jsonl"))).toBe(true);
-  expect(existsSync(join(pdir, "config.jsonl"))).toBe(true);
+  expect(existsSync(join(pdir, "config.json"))).toBe(true);
   expect(await names()).toEqual(["Hello World", "carried"]);
   // Matched by id, not path: a renamed project folder finds the same record.
   const { renameSync } = await import("node:fs");
@@ -186,26 +186,26 @@ test("config.jsonl layers: global < project < env, scope picks storage", async (
   expect(existsSync(join(other, ".pi-do"))).toBe(false);
   expect(readFileSync(join(root, "projects", "projects.jsonl"), "utf8")).toBe(before);
   const tmpRoot = tmpRoot0();
-  for (const f of ["config.jsonl", "todos/lists.jsonl", "todos/untrusted.todos.jsonl"]) expect(existsSync(join(tmpRoot, ".pi-do", f))).toBe(true);
+  for (const f of ["config.json", "todos/lists.jsonl", "todos/untrusted.todos.jsonl"]) expect(existsSync(join(tmpRoot, ".pi-do", f))).toBe(true);
   // First run ever (no ~/.pi-do) onboards even a temp store.
   const { renameSync: mv } = await import("node:fs");
   rmSync(tmpRoot, { recursive: true }); mv(root, `${root}.bak`);
-  expect(await names()).toEqual(["Hello World"]); expect(existsSync(join(root, "config.jsonl"))).toBe(true);
+  expect(await names()).toEqual(["Hello World"]); expect(existsSync(join(root, "config.json"))).toBe(true);
   rmSync(root, { recursive: true }); mv(`${root}.bak`, root);
   rmSync(tmpRoot, { recursive: true }); (ctx as any).cwd = cwd; trusted = true;
   // Project config overrides global config; env overrides both.
-  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ adapters: { dex: { sync: true } } }) + "\n");
-  writeFileSync(join(pdir, "config.jsonl"), JSON.stringify({ adapters: { dex: { sync: false } } }) + "\n");
+  writeFileSync(join(root, "config.json"), JSON.stringify({ adapters: { dex: { sync: true } } }) + "\n");
+  writeFileSync(join(pdir, "config.json"), JSON.stringify({ adapters: { dex: { sync: false } } }) + "\n");
   await list(); expect(dexCalls).toBe(0);
-  writeFileSync(join(pdir, "config.jsonl"), "");
+  writeFileSync(join(pdir, "config.json"), "");
   await list(); expect(dexCalls).toBeGreaterThan(0);
-  writeFileSync(join(root, "config.jsonl"), "");
+  writeFileSync(join(root, "config.json"), "");
   // --global export/import targets the global store explicitly.
   await command.handler("export out.txt --global", ctx);
   expect(readFileSync(join(cwd, "out.txt"), "utf8")).toMatch(/^Hello World piid:/);
-  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ backend: "dex" }) + "\n");
+  writeFileSync(join(root, "config.json"), JSON.stringify({ backend: "dex" }) + "\n");
   await expect(list()).rejects.toThrow("replaced by");
-  writeFileSync(join(root, "config.jsonl"), JSON.stringify({ adapters: { nope: {} } }) + "\n");
+  writeFileSync(join(root, "config.json"), JSON.stringify({ adapters: { nope: {} } }) + "\n");
   await expect(list()).rejects.toThrow("Invalid adapters");
  } finally {
   for (const [key, value] of Object.entries({ PI_DO_HOME: env.home, PI_DO_FILE: env.file, PI_DO_SCOPE: env.scope })) {
@@ -340,4 +340,29 @@ test.skipIf(process.platform !== "darwin")("Things adapter: writes via URL schem
   await a.update("T1", { completed: true });
   expect(await a.list()).toEqual([{ id: "T1", name: "a b&c", description: "d", completed: true, started_at: null }]);
  } finally { if (prev !== undefined) process.env.PI_DO_THINGS_TOKEN = prev; }
+});
+
+test("config.json is JSONC, migrates config.jsonl, keeps $schema on this version", async () => {
+ const { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } = await import("node:fs");
+ const { tmpdir } = await import("node:os");
+ const { join } = await import("node:path");
+ const { readConfig, schemaUrl } = await import("../src/store.ts");
+ const dir = mkdtempSync(join(tmpdir(), "pi-do-jsonc-"));
+ expect(schemaUrl).toEndWith(`/v${JSON.parse(readFileSync("package.json", "utf8")).version}/schema.json`);
+ // Legacy JSONL lines merge into config.json; the old file is removed.
+ writeFileSync(join(dir, "config.jsonl"), '{"id":"abc"}\n{"scope":"global"}\n');
+ expect(readConfig(dir)).toMatchObject({ $schema: schemaUrl, id: "abc", scope: "global" });
+ expect(existsSync(join(dir, "config.jsonl"))).toBe(false);
+ // Comments, trailing commas and "//" inside strings; an old $schema is bumped without losing comments.
+ writeFileSync(join(dir, "config.json"), '{\n  "$schema": "https://x/v0.0.1/schema.json", // old\n  /* note */ "file": "~/a//b.jsonl",\n}\n');
+ expect(readConfig(dir)).toMatchObject({ file: "~/a//b.jsonl" });
+ const text = readFileSync(join(dir, "config.json"), "utf8");
+ expect(text).toContain(schemaUrl); expect(text).toContain("// old");
+ writeFileSync(join(dir, "config.json"), "{ nope }");
+ expect(() => readConfig(dir)).toThrow("Invalid JSON");
+ // Every adapter has a schema and every $ref resolves.
+ const schema = JSON.parse(readFileSync("schema.json", "utf8"));
+ const refs = Object.values(schema.properties.adapters.properties).map((p: any) => p.$ref);
+ expect(refs.sort()).toEqual(readdirSync("src/adapters", { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => `src/adapters/${d.name}/${d.name}.schema.json`).sort());
+ for (const ref of refs) expect(JSON.parse(readFileSync(ref, "utf8")).type).toBe("object");
 });

@@ -10,8 +10,8 @@ Syncs pi-do's todo store with [Things 3](https://culturedcode.com/things/) on ma
    ```
    /todos connect things <token>
    ```
-   It is written to `~/.pi-do/adapters/things.json` with `0600` permissions, never to a `config.jsonl` (which may be committed). `PI_DO_THINGS_TOKEN` overrides the file.
-4. Turn sync on in a pi-do `config.jsonl` (global `~/.pi-do/config.jsonl` or the project's):
+   It is written to `~/.pi-do/adapters/things.json` with `0600` permissions, never to a `config.json` (which may be committed). `PI_DO_THINGS_TOKEN` overrides the file.
+4. Turn sync on in a pi-do `config.json` (global `~/.pi-do/config.json` or the project's):
    ```json
    {"adapters": {"things": {"sync": true}}}
    ```
@@ -34,7 +34,7 @@ Each pi-do project syncs with the Things project of the same name (the project f
 
 - Two-way, using the same rules as every adapter: each list or change in pi-do syncs both ways; per field, a change on one side since the last sync is copied across, and if both changed, pi-do wins.
 - Changes made in Things are pulled on the next pi-do action and before each prompt.
-- State: links and last-synced copies live in `sync/things.jsonl` next to the store's `config.jsonl`.
+- State: links and last-synced copies live in `sync/things.jsonl` next to the store's `config.json`.
 
 ## Limitations
 

@@ -41,3 +41,5 @@ Note the package has no license yet (see Publishing); contributions land under w
 ## Publishing
 
 The Pi manifest and `pi-package` keyword are included. Before the first release, confirm npm name availability (or choose a scope), choose a license, add repository metadata, and review the tarball with `bun run pack:check`. Then publish with `bun publish`. Nothing is published automatically.
+
+Release with `bun pm version <patch|minor|major>` then `git push --follow-tags`, before `bun publish`. The version command bumps `package.json` and creates the `v<version>` git tag. Configs point their `$schema` at `https://raw.githubusercontent.com/arobida/pi-do/v<version>/schema.json` (built from `package.json` in `src/store.ts`), so that URL 404s until the tag is pushed.

@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "pi-do config",
+  "description": "~/.pi-do/config.json (global) or a project's .pi-do/config.json. Project overrides global; PI_DO_* env overrides both.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "id": {
+      "type": "string",
+      "pattern": "^[\\w-]+$",
+      "description": "Project id, written by pi-do. Links this project to its record in ~/.pi-do/projects/projects.jsonl; don't edit."
+    },
+    "scope": {
+      "enum": ["project", "global", "temp"],
+      "description": "Where todos live: in the project (.pi-do), in ~/.pi-do/projects, or a temporary per-session file. Set per project with /todos scope."
+    },
+    "file": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Explicit todos file path; ~ is expanded. Overridden by PI_DO_FILE."
+    },
+    "adapters": {
+      "type": "object",
+      "description": "Sync pi-do todos with other task apps.",
+      "additionalProperties": false,
+      "properties": {
+        "dex": { "$ref": "src/adapters/dex/dex.schema.json" },
+        "things": { "$ref": "src/adapters/things/things.schema.json" }
+      }
+    }
+  }
+}
