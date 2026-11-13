@@ -51,13 +51,10 @@ export function thingsAdapter(pi: ExtensionAPI, project: string): Adapter {
 		async create(task) {
 			const auth = token(); // fail before adding, so a missing token can't leave an unlinked to-do
 			const key = randomUUID();
-			if (!(await read())) {
-				await open("add-project", { title: project });
-				// Wait for the project, or the to-do below would land in the Inbox.
-				for (let i = 0; i < 20 && !(await read()); i++) await new Promise((r) => setTimeout(r, 250));
-				if (!(await read())) throw new Error(`Things did not create project "${project}"`);
-			}
-			await open("add", { list: project, title: task.name, notes: `${task.description ?? ""}\n\n[pi-do:${key}]`, completed: task.completed ? "true" : undefined });
+			const todo = { title: task.name, notes: `${task.description ?? ""}\n\n[pi-do:${key}]`, completed: task.completed || undefined };
+			// A missing project is created together with its first to-do in one json call, so the to-do can't land in the Inbox.
+			if (await read()) await open("add", { list: project, title: todo.title, notes: todo.notes, completed: task.completed ? "true" : undefined });
+			else await open("json", { data: JSON.stringify([{ type: "project", attributes: { title: project, items: [{ type: "to-do", attributes: todo }] } }]) });
 			// shortcut: polls up to ~5s for Things to save the new to-do; a slower Things fails this sync and retries later (possible duplicate).
 			for (let i = 0; i < 20; i++) {
 				const found = ((await read()) ?? []).find((t) => t.notes.match(marker)?.[1] === key);
@@ -67,10 +64,8 @@ export function thingsAdapter(pi: ExtensionAPI, project: string): Adapter {
 			throw new Error(`Things did not save "${task.name}"`);
 		},
 		async update(id, patch) {
-			// Diff against Things' current state and send only real changes, so a repeated or overlapping sync is a no-op.
-			const cur = ((await read()) ?? []).find((t) => t.id === id);
+			// sync() only sends fields that differ from Things' state, so no re-read here.
 			const params = { title: patch.name, notes: "description" in patch ? patch.description ?? "" : undefined, completed: patch.completed === undefined ? undefined : String(patch.completed) };
-			if (cur) { if (params.title === cur.name) params.title = undefined; if (params.notes === cur.notes.replace(marker, "")) params.notes = undefined; if (params.completed === String(cur.status === "completed")) params.completed = undefined; }
 			if (Object.values(params).every((v) => v === undefined)) return;
 			await open("update", { id, "auth-token": token(), ...params });
 		},

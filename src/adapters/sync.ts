@@ -55,7 +55,8 @@ export async function sync(file: string, base: string, adapter: Adapter): Promis
 		const lv = norm(l), rv = norm({ ...r, id: l.id, parent: r.parent && toLocal.get(r.parent) }), b = link.base;
 		const push: Partial<Task> = {}, pull: Partial<Task> = {};
 		for (const f of adapter.fields ?? fields) {
-			if (lv[f] !== b[f]) (push as any)[f] = lv[f];
+			// Skip values the remote already has, so adapters needn't re-read to avoid no-op writes.
+			if (lv[f] !== b[f]) { if (lv[f] !== rv[f]) (push as any)[f] = lv[f]; }
 			else if (rv[f] !== b[f]) (pull as any)[f] = rv[f];
 		}
 		if (Object.keys(push).length) await adapter.update(r.id, { ...push, parent: push.parent && toRemote.get(push.parent), result: lv.result });

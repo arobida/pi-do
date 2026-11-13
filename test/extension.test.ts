@@ -318,7 +318,7 @@ test.skipIf(process.platform !== "darwin")("Things adapter: writes via URL schem
   if (cmd === "osascript") { expect(args.at(-1)).toBe("proj"); return { code: 0, stdout: project ? JSON.stringify(todos) : "null", stderr: "" }; }
   const url = new URL(args[1]); urls.push(args[1]);
   const p = Object.fromEntries(url.searchParams);
-  if (url.pathname === "/add-project") { expect(p.title).toBe("proj"); project = true; }
+  if (url.pathname === "/json") { const [{ type, attributes: a }] = JSON.parse(p.data); expect([type, a.title]).toEqual(["project", "proj"]); project = true; const t = a.items[0].attributes; todos.push({ id: "T1", name: t.title, notes: t.notes, status: "open" }); }
   else if (url.pathname === "/add") expect(p.list).toBe("proj"), todos.push({ id: "T1", name: p.title, notes: p.notes, status: p.completed === "true" ? "completed" : "open" });
   else { const t = todos.find((x) => x.id === p.id); if (p["auth-token"] !== "tok") throw new Error("bad token"); if (p.notes !== undefined) t.notes = p.notes; if (p.completed) t.status = p.completed === "true" ? "completed" : "open"; }
   return { code: 0, stdout: "", stderr: "" };
@@ -332,7 +332,7 @@ test.skipIf(process.platform !== "darwin")("Things adapter: writes via URL schem
   expect(statSync(`${process.env.PI_DO_HOME}/adapters/things.json`).mode & 0o777).toBe(0o600);
   expect(todos).toHaveLength(0);
   expect(await a.create({ id: "x", name: "a b&c", description: "d", completed: false, started_at: null })).toBe("T1");
-  expect(urls.some((u) => u.includes("title=a%20b%26c"))).toBe(true);
+  expect(urls[0]).toContain("things:///json?");
   await a.update("T1", { completed: true });
   expect(await a.list()).toEqual([{ id: "T1", name: "a b&c", description: "d", completed: true, started_at: null }]);
  } finally { if (prev !== undefined) process.env.PI_DO_THINGS_TOKEN = prev; }
