@@ -1,5 +1,5 @@
 import { type ExtensionAPI, type ExtensionContext, type Theme } from "@earendil-works/pi-coding-agent";
-import { truncateToWidth, type TUI } from "@earendil-works/pi-tui";
+import { Text, truncateToWidth, type TUI } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { existsSync, mkdirSync, watch, type FSWatcher, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -85,47 +85,68 @@ export default function taskPanel(pi: ExtensionAPI) {
 		}, { placement: "aboveEditor" });
 	}
 
-	pi.registerTool({
-		name: "todo_task",
-		label: "Tasks",
-		description: "Manage tasks with list, ready (open, unclaimed, unblocked), create, start, complete, edit, link (pido:// Markdown link for a task), or resolve (read a pido:// link). Storage defaults to a temporary session file; Dex can sync via the adapters config.",
-		parameters: Type.Object({
-			action: Type.Union([Type.Literal("list"), Type.Literal("ready"), Type.Literal("create"), Type.Literal("start"), Type.Literal("complete"), Type.Literal("edit"), Type.Literal("link"), Type.Literal("resolve")]),
-			id: Type.Optional(Type.String({ description: "Task ID for start, complete, edit, or link" })),
-			name: Type.Optional(Type.String({ description: "Task name for create or edit" })),
-			description: Type.Optional(Type.String({ description: "Task details for create or edit" })),
-			parent: Type.Optional(Type.String({ description: "ID of an existing task to nest under (not free text)" })),
-			blocked_by: Type.Optional(Type.String({ description: "Comma-separated IDs of tasks that must complete first; replaces the list on edit, empty clears" })),
-			result: Type.Optional(Type.String({ description: "Completion result" })),
-			url: Type.Optional(Type.String({ description: "pido://<project-id>/<task-id> link for resolve" })),
-			force: Type.Optional(Type.Boolean({ description: "Start or complete a task another live session has claimed" })),
-		}),
-		async execute(_id, params, signal, _onUpdate, ctx) {
-			const { action, id, name, description, parent, blocked_by, result, url, force } = params;
-			if (action === "link" || action === "resolve") {
-				if (action === "link" ? !id?.trim() : !url?.trim()) throw new Error(`${action} requires ${action === "link" ? "an id" : "a url"}`);
-				return { content: [{ type: "text", text: action === "link" ? link(ctx, id!) : resolveLink(url!) }], details: {} };
-			}
-			if (action === "create" && !name?.trim()) throw new Error("create requires a name");
-			if (["start", "complete", "edit"].includes(action) && !id?.trim()) throw new Error(`${action} requires an id`);
-			if (action === "edit" && name === undefined && description === undefined && blocked_by === undefined) throw new Error("edit requires a name, description or blocked_by");
-			if (name !== undefined && (action === "create" || action === "edit")) checkName(name);
-			let args: string[];
-			if (action === "list") args = ["list", "--all", "--json"];
-			else if (action === "ready") args = ["ready"];
-			else if (action === "create") args = ["create", name!, ...(description !== undefined ? ["--description", description] : []), ...(parent ? ["--parent", parent] : []), ...(blocked_by !== undefined ? ["--blocked-by", blocked_by] : [])];
-			else if (action === "edit") args = ["edit", id!, ...(name !== undefined ? ["--name", name] : []), ...(description !== undefined ? ["--description", description] : []), ...(blocked_by !== undefined ? ["--blocked-by", blocked_by] : [])];
-			else if (action === "complete") args = ["complete", id!, "--result", result || "Completed", "--claim", claim(ctx), "--no-commit"];
-			else args = ["start", id!, "--claim", claim(ctx)];
-			if (force && (action === "start" || action === "complete")) args.push("--force");
-			const output = await run(ctx, args, signal);
-			if (id) track(id);
-			else if (action === "create" && parent && mine.has(parent)) { const m = output.match(/Created task (\S+)/); if (m) track(m[1]); }
-			// The change is already saved; a failed reload must not make the agent retry it.
-			try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); }
-			return { content: [{ type: "text", text: output }], details: {} };
+	// One shared runner behind six small tools, so each schema marks exactly the fields its action needs.
+	async function act(action: string, p: Record<string, any>, signal: AbortSignal | undefined, ctx: ExtensionContext) {
+		// Models fill unused fields with "" or null; treat both as not given.
+		for (const k of Object.keys(p)) if (p[k] === "" || p[k] === null) delete p[k];
+		const { id, name, description, parent, result, url, force, query } = p;
+		const blocked_by = Array.isArray(p.blocked_by) ? p.blocked_by.join(",") : p.blocked_by;
+		if (action === "link") return link(ctx, id);
+		if (action === "resolve") return resolveLink(url);
+		if (action === "edit" && name === undefined && description === undefined && blocked_by === undefined) throw new Error("todo_edit needs at least one of name, description, blocked_by");
+		if (name !== undefined) checkName(name);
+		let args: string[];
+		if (action === "list") args = p.ready ? ["ready"] : ["list", ...(query?.trim() ? ["--query", query] : [])];
+		else if (action === "create") args = ["create", name, ...(description !== undefined ? ["--description", description] : []), ...(parent ? ["--parent", parent] : []), ...(blocked_by !== undefined ? ["--blocked-by", blocked_by] : [])];
+		else if (action === "edit") args = ["edit", id, ...(name !== undefined ? ["--name", name] : []), ...(description !== undefined ? ["--description", description] : []), ...(blocked_by !== undefined ? ["--blocked-by", blocked_by] : [])];
+		else if (p.status === "completed") args = ["complete", id, "--result", result || "Completed", "--claim", claim(ctx), "--no-commit"];
+		else if (result !== undefined) throw new Error("result is only for status completed");
+		else args = ["start", id, "--claim", claim(ctx)];
+		if (force && action === "status") args.push("--force");
+		const output = await run(ctx, args, signal);
+		if (id) track(id);
+		else if (action === "create" && parent && mine.has(parent)) { const m = output.match(/Created task (\S+)/); if (m) track(m[1]); }
+		// The change is already saved; a failed reload must not make the agent retry it.
+		try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); }
+		return output;
+	}
+	const Id = Type.String({ description: "Task id, or any unique prefix (e.g. a1b2c3 for proj-a1b2c3)" });
+	const Blockers = Type.Array(Type.String(), { description: "Ids (or unique prefixes) of tasks that must complete first" });
+	const tool = (name: string, description: string, parameters: any, action = name.slice(5)) => pi.registerTool({
+		name, label: "Tasks", description, parameters,
+		// Shown to the user as one family (`todo › create …`); the model still sees flat tools.
+		renderCall(args: any, theme: Theme, context: any) {
+			const key = args.name ?? args.id ?? args.url ?? args.query ?? (args.ready ? "ready" : "");
+			const text = context?.lastComponent ?? new Text("", 0, 0);
+			text.setText(`${theme.fg("toolTitle", theme.bold(`todo › ${action}`))} ${key}${args.status ? ` → ${args.status}` : ""}`);
+			return text;
 		},
+		async execute(_id, params, signal, _onUpdate, ctx) { return { content: [{ type: "text", text: await act(action, { ...(params as object) }, signal, ctx) }], details: {} }; },
 	});
+	tool("todo_list", "List tasks as a JSON array. ready: true lists only open, unclaimed, unblocked tasks. Ids are short and project-prefixed (e.g. proj-a1b2c3).", Type.Object({
+		query: Type.Optional(Type.String({ description: "Case-insensitive text to match in task name or description" })),
+		ready: Type.Optional(Type.Boolean({ description: "Only tasks ready to work on" })),
+	}));
+	tool("todo_create", "Create a task. Returns its id.", Type.Object({
+		name: Type.String({ description: "Task name, one line" }),
+		description: Type.Optional(Type.String({ description: "Task details" })),
+		parent: Type.Optional(Type.String({ description: "Id of an existing task to nest under" })),
+		blocked_by: Type.Optional(Blockers),
+	}));
+	tool("todo_edit", "Change a task. Give only the fields to change; at least one is required.", Type.Object({
+		id: Id,
+		name: Type.Optional(Type.String({ description: "New task name" })),
+		description: Type.Optional(Type.String({ description: "New task details" })),
+		blocked_by: Type.Optional(Type.Array(Type.String(), { description: "Replaces the blocker list; [] clears it" })),
+	}));
+	tool("todo_status", "Start or complete a task. Starting claims it for this session.", Type.Object({
+		id: Id,
+		status: Type.Union([Type.Literal("started"), Type.Literal("completed")]),
+		result: Type.Optional(Type.String({ description: "Only with completed: what was done (default: Completed)" })),
+		force: Type.Optional(Type.Boolean({ description: "Override another live session's claim" })),
+	}));
+	tool("todo_link", "Get a Markdown pido:// link to a task, for use in notes or other projects.", Type.Object({ id: Id }));
+	tool("todo_resolve", "Read the task behind a pido:// link, from any project.", Type.Object({ url: Type.String({ description: "A pido://<project-id>/<task-id> link" }) }));
 
 	pi.registerCommand("todos", {
 		description: "Show tasks or move todo.txt: /todos [current|project|completed|export <path>|import <path>|migrate .pi-do|.agents/pi-do|scope project|global|connect things <token>] [--global]", 

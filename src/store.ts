@@ -4,7 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { home, readJsonl } from "./util.ts";
-import { runFile } from "./tasks.ts";
+import { findId, runFile } from "./tasks.ts";
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 // Pinned to this install's version so editors validate against the options it actually supports; tag v<version> on release.
@@ -158,16 +158,16 @@ export function setScope(ctx: ExtensionContext, scope: string): string {
 }
 
 const findTask = (file: string, id: string): any => {
-	const task = JSON.parse(runFile(file, ["list"]) as string).find((t: any) => t.id === id);
-	if (!task) throw new Error(`Task not found: ${id}`);
-	return task;
+	const items = JSON.parse(runFile(file, ["list"]) as string);
+	return items.find((t: any) => t.id === findId(items, id, file));
 };
 
 // `[name](pido://<project-id>/<task-id>)`; only registered stores can be resolved later.
 export function link(ctx: ExtensionContext, id: string): string {
 	const s = settings(ctx);
 	if (s.scope === "temp" || s.file) throw new Error(`Cannot link: ${s.file ? "explicit-file" : "temp-scope"} stores are not registered, so the link could never be resolved`);
-	return `[${findTask(storeFile(ctx, s), id).name}](pido://${s.id}/${id})`;
+	const t = findTask(storeFile(ctx, s), id);
+	return `[${t.name}](pido://${s.id}/${t.id})`;
 }
 
 // Looks the project up in the registry and reads its store; never a stale copy at an old path.

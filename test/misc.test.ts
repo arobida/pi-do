@@ -95,3 +95,20 @@ test("takeover restores a lock a new holder took mid-rename and does not run fn"
 	expect(ran).toBe(false);
 	expect(readFileSync(lock, "utf8")).toBe(`${process.pid}:new`);
 });
+
+import { runFile as rf } from "../src/tasks.ts";
+import { tmpdir as td } from "node:os";
+import { join as j } from "node:path";
+test("short prefixed ids, prefix lookup, list query", async () => {
+	const file = j(mkdtempSync(j(td(), "ids-")), "My-Proj.todos.jsonl");
+	const a = (await rf(file, ["create", "Write spec", "--description", "link target"]) as string).match(/Created task (\S+)/)![1];
+	expect(a).toMatch(/^mypr-[0-9a-f]{6}$/);
+	const short = a.slice(5, 9);
+	const b = (await rf(file, ["create", "Review", "--blocked-by", short]) as string).match(/Created task (\S+)/)![1];
+	expect(JSON.parse(await rf(file, ["list"]) as string).find((t: any) => t.id === b).blocked_by).toEqual([a]);
+	expect(await rf(file, ["start", short])).toContain(a);
+	expect(() => rf(file, ["list", "--query", "zz"])).not.toThrow();
+	expect(JSON.parse(await rf(file, ["list", "--query", "LINK"]) as string).map((t: any) => t.id)).toEqual([a]);
+	await expect(rf(file, ["start", "mypr-"])).rejects.toThrow("Ambiguous task id");
+	await expect(rf(file, ["start", "zzz"])).rejects.toThrow("Task not found: zzz");
+});

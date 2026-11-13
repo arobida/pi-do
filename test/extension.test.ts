@@ -1,9 +1,21 @@
 import { expect, mock, test } from "bun:test";
 
-mock.module("@earendil-works/pi-tui", () => ({ truncateToWidth: (text: string) => text }));
+mock.module("@earendil-works/pi-tui", () => ({ truncateToWidth: (text: string) => text, Text: class { t = ""; setText(t: string) { this.t = t; } render() { return [this.t]; } } }));
 mock.module("@earendil-works/pi-coding-agent", () => ({ getAgentDir: () => process.env.PI_CODING_AGENT_DIR || `${process.env.HOME}/.pi/agent` }));
 process.env.PI_DO_HOME = (await import("node:fs")).mkdtempSync(`${(await import("node:os")).tmpdir()}/pi-do-home-`);
 const { default: extension } = await import("../src/index.ts");
+
+const regTools: Record<string, any> = {};
+const toolFor: Record<string, [string, any?]> = { list: ["todo_list"], ready: ["todo_list", { ready: true }], create: ["todo_create"], edit: ["todo_edit"], start: ["todo_status", { status: "started" }], complete: ["todo_status", { status: "completed" }], link: ["todo_link"], resolve: ["todo_resolve"] };
+// Test shim: old {action} calls dispatch to the six tools.
+function shimTool(t: any) {
+ regTools[t.name] = t;
+ return { execute: (c: string, { action, ...p }: any, s: any, u: any, ctx: any) => {
+  const [name, extra] = toolFor[action];
+  if (typeof p.blocked_by === "string") p.blocked_by = p.blocked_by.split(",").filter(Boolean);
+  return regTools[name].execute(c, { ...p, ...extra }, s, u, ctx);
+ } };
+}
 
 test("registers the existing tool, command, shortcuts, and lifecycle hooks", () => {
  const tools: any[] = [], commands: string[] = [], shortcuts: string[] = [], events: string[] = [];
@@ -13,7 +25,7 @@ test("registers the existing tool, command, shortcuts, and lifecycle hooks", () 
   registerShortcut: (key: string) => shortcuts.push(key),
   on: (event: string) => events.push(event),
  } as any);
- expect(tools.map(t => t.name)).toEqual(["todo_task"]);
+ expect(tools.map(t => t.name)).toEqual(["todo_list", "todo_create", "todo_edit", "todo_status", "todo_link", "todo_resolve"]);
  expect(commands).toEqual(["todos"]);
  expect(shortcuts).toEqual(["ctrl+shift+t", "ctrl+shift+v"]);
  expect(events).toEqual(["session_shutdown", "session_start", "before_agent_start", "tool_result"]);
@@ -47,7 +59,7 @@ test("file backend persists task operations without Dex", async () => {
  process.env.PI_DO_FILE = join(dir, "tasks.jsonl");
  try {
   let tool: any, command: any;
-  extension({ registerTool: (t: any) => tool = t, registerCommand: (_name: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {}, exec() { throw new Error("Dex must not run"); } } as any);
+  extension({ registerTool: (t: any) => tool = shimTool(t), registerCommand: (_name: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {}, exec() { throw new Error("Dex must not run"); } } as any);
   const notifications: string[] = [];
   const ctx = { cwd: dir, hasUI: false, isProjectTrusted: () => true, ui: { notify: (message: string) => notifications.push(message) }, sessionManager: { getSessionId: () => "session" } };
   const run = async (params: any) => (await tool.execute("call", params, undefined, undefined, ctx)).content[0].text;
@@ -59,7 +71,7 @@ test("file backend persists task operations without Dex", async () => {
   const records = readFileSync(process.env.PI_DO_FILE!, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
   expect(records[0]).toMatchObject({ name: "Call Mom +Family @phone", priority: "A", created: "2024-01-01", completed: true, completed_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) });
   expect(records[1]).toEqual({ id: imported[1].id, name: "Other task", completed: false, started_at: null });
-  const id = (await run({ action: "create", name: "one", description: "details" })).split(" ").pop();
+  const id = (await run({ action: "create", name: "one", description: "details" })).match(/Created task (\S+)/)![1];
   await run({ action: "start", id });
   await run({ action: "edit", id, name: "updated" });
   await run({ action: "complete", id, result: "done" });
@@ -96,11 +108,11 @@ test.skipIf(!Bun.which("dex"))("Dex adapter syncs both ways", async () => {
  const dex = async (args: string[]) => { const p = Bun.spawn(["dex", "--storage-path", store, ...args], { stdout: "pipe", stderr: "pipe" }); const [stdout, stderr, code] = await Promise.all([new Response(p.stdout).text(), new Response(p.stderr).text(), p.exited]); return { stdout, stderr, code }; };
  try {
   let tool: any;
-  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, on() {}, appendEntry() {}, exec: async (_cmd: string, args: string[]) => dex(args[0] === "--storage-path" ? args.slice(2) : args) } as any);
+  extension({ registerTool: (t: any) => tool = shimTool(t), registerCommand() {}, registerShortcut() {}, on() {}, appendEntry() {}, exec: async (_cmd: string, args: string[]) => dex(args[0] === "--storage-path" ? args.slice(2) : args) } as any);
   const ctx = { cwd: dir, hasUI: false, isProjectTrusted: () => false, ui: { notify(m: string) { throw new Error(m); } }, sessionManager: { getSessionId: () => "dex-sync" } };
   const run = async (params: any) => (await tool.execute("call", params, undefined, undefined, ctx)).content[0].text;
   const remote = async () => JSON.parse((await dex(["list", "--all", "--json"])).stdout);
-  const id = (await run({ action: "create", name: "(A) Call +Family @phone", description: "details" })).split(" ").pop();
+  const id = (await run({ action: "create", name: "(A) Call +Family @phone", description: "details" })).match(/Created task (\S+)/)![1];
   let [r] = await remote();
   expect(r).toMatchObject({ name: "(A) Call +Family @phone", description: "details", completed: false });
   await dex(["edit", r.id, "--name", "Renamed in dex"]);
@@ -130,7 +142,7 @@ test("config.json layers: global < project < env, scope picks storage", async ()
  try {
   mkdirSync(cwd); mkdirSync(root);
   let tool: any, command: any; let trusted = true; let dexCalls = 0;
-  extension({ registerTool: (t: any) => tool = t, registerCommand: (_n: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {}, exec: async () => { dexCalls++; return { code: 0, stdout: "[]", stderr: "" }; } } as any);
+  extension({ registerTool: (t: any) => tool = shimTool(t), registerCommand: (_n: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {}, exec: async () => { dexCalls++; return { code: 0, stdout: "[]", stderr: "" }; } } as any);
   const notes: string[] = [];
   const ctx = { cwd, hasUI: false, isProjectTrusted: () => trusted, ui: { notify: (m: string) => notes.push(m) }, sessionManager: { getSessionId: () => "session" } };
   const list = async () => JSON.parse((await tool.execute("call", { action: "list" }, undefined, undefined, ctx)).content[0].text);
@@ -254,12 +266,12 @@ test("audit regressions: names, options, dates, refresh, export ~", async () => 
  process.env.PI_DO_FILE = join(dir, "tasks.jsonl");
  try {
   let tool: any;
-  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, on() {}, appendEntry() {} } as any);
+  extension({ registerTool: (t: any) => tool = shimTool(t), registerCommand() {}, registerShortcut() {}, on() {}, appendEntry() {} } as any);
   let failWidget = false;
   const ctx = { cwd: dir, hasUI: true, isProjectTrusted: () => true, ui: { notify() {}, setWidget() { if (failWidget) throw new Error("boom"); } }, sessionManager: { getSessionId: () => "s" } };
   const run = async (params: any) => (await tool.execute("call", params, undefined, undefined, ctx)).content[0].text;
   for (const name of ["review piid:foo now", "x investigate bug", "--help", "-v", "a pistart:1"]) await expect(run({ action: "create", name })).rejects.toThrow("Task name must");
-  const id = (await run({ action: "create", name: "description", description: "--name" })).split(" ").pop();
+  const id = (await run({ action: "create", name: "description", description: "--name" })).match(/Created task (\S+)/)![1];
   expect(JSON.parse(await run({ action: "list" }))[0]).toMatchObject({ name: "description", description: "--name" });
   await run({ action: "complete", id });
   writeFileSync(process.env.PI_DO_FILE!, readFileSync(process.env.PI_DO_FILE!, "utf8").replace(/"completed_date":"[^"]+"/, '"completed_date":"2020-01-01"'));
@@ -281,7 +293,7 @@ test("current view shows subtasks of session tasks but not unrelated new tasks",
  const prev = process.env.PI_DO_FILE; process.env.PI_DO_FILE = `${mkdtempSync(`${(await import("node:os")).tmpdir()}/pi-do-view-`)}/t.jsonl`;
  writeFileSync(process.env.PI_DO_FILE, tasks.map((t: any) => JSON.stringify({ ...t, parent_id: undefined, parent: t.parent_id })).join("\n") + "\n");
  try {
-  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, appendEntry() {}, on: (e: string, h: any) => { if (e === "session_start") start = h; } } as any);
+  extension({ registerTool: (t: any) => tool = shimTool(t), registerCommand() {}, registerShortcut() {}, appendEntry() {}, on: (e: string, h: any) => { if (e === "session_start") start = h; } } as any);
   const ctx = { cwd: process.cwd(), hasUI: true, isProjectTrusted: () => false, ui: { setWidget: (_k: string, f: any) => widget = f, notify() {} }, sessionManager: { getSessionId: () => "s", getEntries: () => [{ type: "custom", customType: "dex-current", data: { id: "a" } }] } };
   await start({}, ctx);
   const out = widget({ requestRender() {} }, { fg: (_c: string, x: string) => x, strikethrough: (x: string) => x }).render(200).join("\n");
@@ -297,7 +309,7 @@ test("sync: 3-way per field, pi-do wins conflicts, deletions never propagate", a
  const remote = new Map<string, any>(); let n = 0;
  const adapter = { name: "fake", list: async () => [...remote.values()].map((t) => ({ ...t })), create: async (t: any) => { const id = `r${n++}`; remote.set(id, { ...t, id }); return id; }, update: async (id: string, p: any) => { remote.set(id, { ...remote.get(id), ...Object.fromEntries(Object.entries(p).filter(([, v]) => v !== undefined)) }); } };
  try {
-  const id = (await runFile(file, ["create", "a", "--description", "d"]) as string).split(" ").pop()!;
+  const id = (await runFile(file, ["create", "a", "--description", "d"]) as string).match(/Created task (\S+)/)![1];
   await sync(file, dir, adapter);
   const list = async () => JSON.parse(await runFile(file, ["list"]) as string);
   await runFile(file, ["edit", id, "--name", "local"]);
@@ -393,11 +405,11 @@ test("session_shutdown releases claims; force overrides a live claim; link and r
  try {
   require("node:fs").mkdirSync(cwd);
   let tool: any; const handlers: any = {};
-  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, on: (e: string, h: any) => handlers[e] = h, appendEntry() {}, exec() { throw new Error("no dex"); } } as any);
+  extension({ registerTool: (t: any) => tool = shimTool(t), registerCommand() {}, registerShortcut() {}, on: (e: string, h: any) => handlers[e] = h, appendEntry() {}, exec() { throw new Error("no dex"); } } as any);
   const ctxFor = (id: string) => ({ cwd, hasUI: false, isProjectTrusted: () => true, ui: { notify() {} }, sessionManager: { getSessionId: () => id } });
   const [a, b] = [ctxFor("A"), ctxFor("B")];
   const run = async (ctx: any, params: any) => (await tool.execute("call", params, undefined, undefined, ctx)).content[0].text;
-  const id = (await run(a, { action: "create", name: "shared" })).split(" ").pop();
+  const id = (await run(a, { action: "create", name: "shared" })).match(/Created task (\S+)/)![1];
   await run(a, { action: "start", id });
   await expect(run(b, { action: "start", id })).rejects.toThrow("pass force to override");
   await run(b, { action: "start", id, force: true });
@@ -412,6 +424,12 @@ test("session_shutdown releases claims; force overrides a live claim; link and r
   const md = await run(a, { action: "link", id });
   expect(md).toMatch(/^\[shared\]\(pido:\/\//);
   expect(await run(a, { action: "resolve", url: md.match(/\((pido:[^)]+)\)/)![1] })).toContain("shared");
+  await expect(run(a, { action: "edit", id, name: "", url: null })).rejects.toThrow("todo_edit needs at least one of");
+  await expect(run(a, { action: "start", id, result: "x" })).rejects.toThrow("result is only for status completed");
+  expect(regTools.todo_status.renderCall({ id, status: "started" }, { fg: (_: string, x: string) => x, bold: (x: string) => x }, {}).render(80)[0]).toContain(`todo › status ${id} → started`);
+  expect(await run(a, { action: "start", id, force: "" })).toBe(`Started task ${id} "shared"; claimed by this session`);
+  expect(await run(a, { action: "edit", id, description: "d" })).toBe(`Updated task ${id} "shared"; changed description`);
+  expect(await run(a, { action: "complete", id, result: "ok" })).toBe(`Completed task ${id} "shared"; result: ok`);
  } finally {
   for (const [k, v] of [["PI_DO_HOME", env.home], ["PI_DO_FILE", env.file], ["PI_DO_SCOPE", env.scope]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
   rmSync(dir, { recursive: true, force: true });

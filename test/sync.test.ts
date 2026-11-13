@@ -35,7 +35,7 @@ test("sync: remote name like '- call mom' syncs in", async () => {
 test("put: partial record keeps stored name", async () => {
 	const { dir, file } = setup();
 	try {
-		const id = (await runFile(file, ["create", "keep"]) as string).split(" ").pop()!;
+		const id = (await runFile(file, ["create", "keep"]) as string).match(/Created task (\S+)/)![1];
 		await runFile(file, ["put", JSON.stringify({ id, completed: true })]);
 		expect(JSON.parse(await runFile(file, ["list"]) as string)[0]).toMatchObject({ name: "keep", completed: true });
 	} finally { rmSync(dir, { recursive: true, force: true }); }
@@ -103,7 +103,7 @@ test("sync: linked task with dangling parent takes remote update and parent is c
 test("claims: refused for another live claimer, force overrides, dead pid ignored, complete clears, release scoped", async () => {
 	const { dir, file } = setup();
 	try {
-		const mk = async (n: string) => (await runFile(file, ["create", n]) as string).split(" ").pop()!;
+		const mk = async (n: string) => (await runFile(file, ["create", n]) as string).match(/Created task (\S+)/)![1];
 		const [a, b] = [await mk("a"), await mk("b")];
 		const mine = `s1:${process.pid}`, other = `s2:${process.pid}`;
 		const get = async (id: string) => JSON.parse(await runFile(file, ["list"]) as string).find((t: any) => t.id === id);
@@ -128,7 +128,7 @@ test("claims: refused for another live claimer, force overrides, dead pid ignore
 test("claims: survive a sync pull and never reach adapter.create", async () => {
 	const { dir, file, remote, adapter } = setup();
 	try {
-		const id = (await runFile(file, ["create", "a"]) as string).split(" ").pop()!;
+		const id = (await runFile(file, ["create", "a"]) as string).match(/Created task (\S+)/)![1];
 		await runFile(file, ["start", id, "--claim", "s1:1"]);
 		await sync(file, dir, adapter);
 		expect([...remote.values()][0].claimed_by).toBeUndefined();
@@ -141,7 +141,7 @@ test("claims: survive a sync pull and never reach adapter.create", async () => {
 test("blocked_by: ready query, claims, self/cycle rejected, multiple, clear", async () => {
 	const { dir, file } = setup();
 	try {
-		const mk = async (n: string, ...o: string[]) => (await runFile(file, ["create", n, ...o]) as string).split(" ").pop()!;
+		const mk = async (n: string, ...o: string[]) => (await runFile(file, ["create", n, ...o]) as string).match(/Created task (\S+)/)![1];
 		const ready = async () => JSON.parse(await runFile(file, ["ready"]) as string).map((t: any) => t.id);
 		const list = async () => JSON.parse(await runFile(file, ["list"]) as string);
 		const a = await mk("a"), b = await mk("b", "--blocked-by", a);

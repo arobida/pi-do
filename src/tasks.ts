@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
-import { dirname } from "node:path";
-import { randomUUID } from "node:crypto";
+import { basename, dirname } from "node:path";
+import { randomBytes, randomUUID } from "node:crypto";
 import { checkName, clean, parseTodo, todoLine, toTask, type Task } from "./todo.ts";
 import { isAlive, withLock } from "./util.ts";
 
@@ -29,6 +29,16 @@ function checkBlockers(items: Task[], id: string, blockers: string[] = []) {
 }
 const live = (task: Task) => !!task.claimed_by && isAlive(Number(task.claimed_by.split(":").pop()));
 const ids = (s?: string) => (s ? s.split(",").map((x) => x.trim()).filter(Boolean) : undefined);
+// Short project-prefixed ids (like Dex/Beads) so agents copy a few characters, not a UUID.
+const prefix = (file: string) => (basename(file).replace(/\.todos\.jsonl$/, "").toLowerCase().replace(/[^a-z0-9]/g, "").slice(0, 4) || "task");
+const newId = (file: string, items: Task[]): string => { for (;;) { const id = `${prefix(file)}-${randomBytes(4).toString("hex").slice(0, 6)}`; if (!items.some((t) => t.id === id)) return id; } };
+// Exact id, else a unique id prefix (with or without the project prefix).
+export function findId(items: Task[], ref: string, file: string): string {
+	if (items.some((t) => t.id === ref)) return ref;
+	const hits = items.filter((t) => t.id.startsWith(ref) || t.id.startsWith(`${prefix(file)}-${ref}`));
+	if (hits.length === 1) return hits[0].id;
+	throw new Error(hits.length ? `Ambiguous task id ${ref}: matches ${hits.map((t) => `${t.id} "${t.name}"`).join(", ")}` : `Task not found: ${ref}`);
+}
 
 // Runs a list/export/import/create/start/complete/edit action against a pi-do JSONL todos file.
 export function runFile(file: string, args: string[]): string | Promise<string> {
@@ -52,7 +62,10 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 		const text = items.flatMap((task) => { try { return [todoLine(task) + "\n"]; } catch { skipped.push(`#${task.id} ${task.name}`); return []; } }).join("");
 		return JSON.stringify({ text, skipped });
 	}
-	if (action === "list") return JSON.stringify(items);
+	if (action === "list") {
+		const q = args.includes("--query") ? args[args.indexOf("--query") + 1]?.toLowerCase() : undefined;
+		return JSON.stringify(q ? items.filter((t) => `${t.name}\n${t.description ?? ""}`.toLowerCase().includes(q)) : items);
+	}
 	if (action === "ready") return JSON.stringify(items.filter((t) => !t.completed && !live(t) && (t.blocked_by ?? []).every((b) => items.find((i) => i.id === b)?.completed ?? true)));
 	const save = () => { const temp = `${file}.${randomUUID()}.tmp`; writeFileSync(temp, items.map((task) => JSON.stringify(clean(task)) + "\n").join(""), { mode: 0o600 }); renameSync(temp, file); };
 	const today = () => new Date().toISOString().slice(0, 10);
@@ -101,12 +114,13 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 	let task: Task;
 	let index = items.length;
 	if (action === "create") {
-		const parent = option("--parent");
+		const parent = option("--parent") && findId(items, option("--parent")!, file);
 		checkParent(items, "", parent);
-		task = { id: randomUUID(), name: value, completed: false, created: today(), started_at: null, description: option("--description"), parent, blocked_by: ids(option("--blocked-by")) };
+		task = { id: newId(file, items), name: value, completed: false, created: today(), started_at: null, description: option("--description"), parent, blocked_by: ids(option("--blocked-by"))?.map((b) => findId(items, b, file)) };
 		checkBlockers(items, task.id, task.blocked_by);
 	} else {
-		index = items.findIndex((item) => item?.id === value);
+		const ref = findId(items, value, file);
+		index = items.findIndex((item) => item?.id === ref);
 		const found = items[index];
 		if (!found) throw new Error(`Task not found: ${value}`);
 		task = found;
@@ -115,12 +129,16 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 		if ((action === "start" || action === "complete") && claim && owner && owner !== claim && live(found) && !option("--force")) throw new Error(`Task ${value} is claimed by ${owner}; pass force to override`);
 		if (action === "start") { task.started_at = new Date().toISOString(); if (claim) task.claimed_by = claim; }
 		else if (action === "complete") { task.claimed_by = undefined; task.completed = true; task.completed_date ||= today(); task.result = option("--result"); }
-		else if (action === "edit") { if (option("--name") !== undefined) task.name = option("--name")!; if (option("--description") !== undefined) task.description = option("--description"); if (option("--blocked-by") !== undefined) { task.blocked_by = ids(option("--blocked-by")); checkBlockers(items, task.id, task.blocked_by); } }
+		else if (action === "edit") { if (option("--name") !== undefined) task.name = option("--name")!; if (option("--description") !== undefined) task.description = option("--description"); if (option("--blocked-by") !== undefined) { task.blocked_by = ids(option("--blocked-by"))?.map((b) => findId(items, b, file)); checkBlockers(items, task.id, task.blocked_by); } }
 		else throw new Error(`Unknown action: ${action}`);
 	}
 	if (action === "create" || (action === "edit" && option("--name") !== undefined)) checkName(task.name);
 	items[index] = clean(task);
 	save();
-	return action === "create" ? `Created task ${task.id}` : `${action}: ${task.id}`;
+	const what = `task ${task.id} "${task.name}"`, blockers = task.blocked_by?.length ? `; blocked by ${task.blocked_by.join(", ")}` : "";
+	if (action === "create") return `Created ${what}${task.parent ? `; parent ${task.parent}` : ""}${blockers}`;
+	if (action === "start") return `Started ${what}${option("--claim") ? "; claimed by this session" : ""}${option("--force") ? " (forced)" : ""}`;
+	if (action === "complete") return `Completed ${what}; result: ${task.result ?? ""}`;
+	return `Updated ${what}; changed ${["--name", "--description", "--blocked-by"].filter((k) => option(k) !== undefined).map((k) => k.slice(2)).join(", ")}${blockers}`;
 	}
 }
