@@ -113,7 +113,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 	const Id = Type.String({ description: "Task id, or any unique prefix (e.g. a1b2c3 for proj-a1b2c3)" });
 	const Blockers = Type.Array(Type.String(), { description: "Ids (or unique prefixes) of tasks that must complete first" });
 	const tool = (name: string, description: string, parameters: any, action = name.slice(5)) => pi.registerTool({
-		name, label: "Tasks", description, parameters,
+		name, label: "Tasks", description, parameters: { ...parameters, additionalProperties: false }, // unknown fields fail loudly instead of being dropped
 		// Shown to the user as one family (`todo › create …`); the model still sees flat tools.
 		renderCall(args: any, theme: Theme, context: any) {
 			const key = args.name ?? args.id ?? args.url ?? args.query ?? (args.ready ? "ready" : "");
