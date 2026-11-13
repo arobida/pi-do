@@ -124,6 +124,7 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 		const found = items[index];
 		if (!found) throw new Error(`Task not found: ${value}`);
 		task = found;
+		var before = JSON.stringify([found.name, found.description ?? "", found.blocked_by ?? []]);
 		const claim = option("--claim"), owner = found.claimed_by;
 		// shortcut: a reused pid keeps a claim looking live until --force or release; upgrade by storing a process start time.
 		if ((action === "start" || action === "complete") && claim && owner && owner !== claim && live(found) && !option("--force")) throw new Error(`Task ${value} is claimed by ${owner}; pass force to override`);
@@ -135,10 +136,14 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 	if (action === "create" || (action === "edit" && option("--name") !== undefined)) checkName(task.name);
 	items[index] = clean(task);
 	save();
+	// Echo the fields a model may have meant to set, so an omission shows up in the reply.
 	const what = `task ${task.id} "${task.name}"`, blockers = task.blocked_by?.length ? `; blocked by ${task.blocked_by.join(", ")}` : "";
-	if (action === "create") return `Created ${what}${task.parent ? `; parent ${task.parent}` : ""}${blockers}`;
+	const desc = task.description ? `; description: "${task.description}"` : "; no description";
+	if (action === "create") return `Created ${what}${desc}${task.parent ? `; parent ${task.parent}` : ""}${blockers}`;
 	if (action === "start") return `Started ${what}${option("--claim") ? "; claimed by this session" : ""}${option("--force") ? " (forced)" : ""}`;
-	if (action === "complete") return `Completed ${what}; result: ${task.result ?? ""}`;
-	return `Updated ${what}; changed ${["--name", "--description", "--blocked-by"].filter((k) => option(k) !== undefined).map((k) => k.slice(2)).join(", ")}${blockers}`;
+	if (action === "complete") return `Completed ${what}; ${task.result ? `result: ${task.result}` : "no result"}`;
+	const after = [task.name, task.description ?? "", task.blocked_by ?? []], was = JSON.parse(before!);
+	const changed = ["name", "description", "blocked_by"].filter((_, i) => JSON.stringify(after[i]) !== JSON.stringify(was[i]));
+	return `${changed.length ? `Updated ${what}; changed ${changed.join(", ")}` : `No change to ${what}; values already set`}${desc}${blockers}`;
 	}
 }

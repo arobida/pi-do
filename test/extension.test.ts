@@ -428,7 +428,8 @@ test("session_shutdown releases claims; force overrides a live claim; link and r
   await expect(run(a, { action: "start", id, result: "x" })).rejects.toThrow("result is only for status completed");
   expect(regTools.todo_status.renderCall({ id, status: "started" }, { fg: (_: string, x: string) => x, bold: (x: string) => x }, {}).render(80)[0]).toContain(`todo › status ${id} → started`);
   expect(await run(a, { action: "start", id, force: "" })).toBe(`Started task ${id} "shared"; claimed by this session`);
-  expect(await run(a, { action: "edit", id, description: "d" })).toBe(`Updated task ${id} "shared"; changed description`);
+  expect(await run(a, { action: "edit", id, description: "d" })).toBe(`Updated task ${id} "shared"; changed description; description: "d"`);
+  expect(await run(a, { action: "edit", id, description: "d" })).toBe(`No change to task ${id} "shared"; values already set; description: "d"`);
   expect(await run(a, { action: "complete", id, result: "ok" })).toBe(`Completed task ${id} "shared"; result: ok`);
  } finally {
   for (const [k, v] of [["PI_DO_HOME", env.home], ["PI_DO_FILE", env.file], ["PI_DO_SCOPE", env.scope]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
