@@ -28,6 +28,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 	const views = ["current", "project", "completed"] as const;
 	let view: (typeof views)[number] = "current";
 	let tui: TUI | undefined;
+	const claim = (ctx: ExtensionContext) => `${ctx.sessionManager.getSessionId()}:${process.pid}`;
 	async function run(ctx: ExtensionContext, args: string[], signal?: AbortSignal, global = false): Promise<string> {
 		const s = settings(ctx, global), file = storeFile(ctx, s);
 		if (args[0] === "list") await syncAll(ctx, global);
@@ -96,9 +97,10 @@ export default function taskPanel(pi: ExtensionAPI) {
 			parent: Type.Optional(Type.String({ description: "ID of an existing task to nest under (not free text)" })),
 			result: Type.Optional(Type.String({ description: "Completion result" })),
 			url: Type.Optional(Type.String({ description: "pido://<project-id>/<task-id> link for resolve" })),
+			force: Type.Optional(Type.Boolean({ description: "Start or complete a task another live session has claimed" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const { action, id, name, description, parent, result, url } = params;
+			const { action, id, name, description, parent, result, url, force } = params;
 			if (action === "link" || action === "resolve") {
 				if (action === "link" ? !id?.trim() : !url?.trim()) throw new Error(`${action} requires ${action === "link" ? "an id" : "a url"}`);
 				return { content: [{ type: "text", text: action === "link" ? link(ctx, id!) : resolveLink(url!) }], details: {} };
@@ -111,8 +113,9 @@ export default function taskPanel(pi: ExtensionAPI) {
 			if (action === "list") args = ["list", "--all", "--json"];
 			else if (action === "create") args = ["create", name!, ...(description !== undefined ? ["--description", description] : []), ...(parent ? ["--parent", parent] : [])];
 			else if (action === "edit") args = ["edit", id!, ...(name !== undefined ? ["--name", name] : []), ...(description !== undefined ? ["--description", description] : [])];
-			else if (action === "complete") args = ["complete", id!, "--result", result || "Completed", "--no-commit"];
-			else args = ["start", id!];
+			else if (action === "complete") args = ["complete", id!, "--result", result || "Completed", "--claim", claim(ctx), "--no-commit"];
+			else args = ["start", id!, "--claim", claim(ctx)];
+			if (force && (action === "start" || action === "complete")) args.push("--force");
 			const output = await run(ctx, args, signal);
 			if (id) track(id);
 			else if (action === "create" && parent && mine.has(parent)) { const m = output.match(/Created task (\S+)/); if (m) track(m[1]); }
@@ -176,7 +179,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 			if (s.adapters.dex?.sync) for (const d of (await dexWatchDirs(pi, ctx)) ?? []) watchDir(d, true, () => later(() => syncAll(ctx)));
 		} catch {}
 	}
-	pi.on("session_shutdown", async () => unwatch());
+	pi.on("session_shutdown", async (_event, ctx) => { unwatch(); try { await runFile(storeFile(ctx, settings(ctx)), ["release", "--claim", claim(ctx)]); } catch {} });
 	pi.on("session_start", async (_event, ctx) => { void watchStore(ctx); restore(ctx); try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); } });
 	// Pick up tasks other agents added through Dex before each prompt.
 	pi.on("before_agent_start", async (_event, ctx) => { try { await refresh(ctx); } catch {} });

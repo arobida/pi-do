@@ -2,7 +2,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
 import { checkName, clean, parseTodo, todoLine, toTask, type Task } from "./todo.ts";
-import { withLock } from "./util.ts";
+import { isAlive, withLock } from "./util.ts";
 
 export class ParentError extends Error {}
 // A parent must exist and must not be the task itself or one of its descendants.
@@ -74,8 +74,14 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 	}
 	// Walk option/value pairs by position so values that look like flags stay values.
 	const options: Record<string, string> = {};
-	for (let i = 2; i < args.length; i++) { if (args[i] === "--no-commit") continue; options[args[i]] = args[++i]; }
+	for (let i = action === "release" ? 1 : 2; i < args.length; i++) { if (args[i] === "--no-commit" || args[i] === "--force") { options[args[i]] = "1"; continue; } options[args[i]] = args[++i]; }
 	const option = (key: string): string | undefined => options[key];
+	if (action === "release") {
+		// Clears every claim equal to --claim (session end).
+		for (const item of items) if (item.claimed_by === option("--claim")) delete item.claimed_by;
+		save();
+		return "release";
+	}
 	let task: Task;
 	let index = items.length;
 	if (action === "create") {
@@ -87,8 +93,11 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 		const found = items[index];
 		if (!found) throw new Error(`Task not found: ${value}`);
 		task = found;
-		if (action === "start") task.started_at = new Date().toISOString();
-		else if (action === "complete") { task.completed = true; task.completed_date ||= today(); task.result = option("--result"); }
+		const claim = option("--claim"), owner = found.claimed_by;
+		// shortcut: a reused pid keeps a claim looking live until --force or release; upgrade by storing a process start time.
+		if ((action === "start" || action === "complete") && claim && owner && owner !== claim && isAlive(Number(owner.split(":").pop())) && !option("--force")) throw new Error(`Task ${value} is claimed by ${owner}; pass force to override`);
+		if (action === "start") { task.started_at = new Date().toISOString(); if (claim) task.claimed_by = claim; }
+		else if (action === "complete") { task.claimed_by = undefined; task.completed = true; task.completed_date ||= today(); task.result = option("--result"); }
 		else if (action === "edit") { if (option("--name") !== undefined) task.name = option("--name")!; if (option("--description") !== undefined) task.description = option("--description"); }
 		else throw new Error(`Unknown action: ${action}`);
 	}

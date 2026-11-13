@@ -99,3 +99,41 @@ test("sync: linked task with dangling parent takes remote update and parent is c
 		expect(t.name).toBe("renamed"); expect(t.parent).toBeUndefined();
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("claims: refused for another live claimer, force overrides, dead pid ignored, complete clears, release scoped", async () => {
+	const { dir, file } = setup();
+	try {
+		const mk = async (n: string) => (await runFile(file, ["create", n]) as string).split(" ").pop()!;
+		const [a, b] = [await mk("a"), await mk("b")];
+		const mine = `s1:${process.pid}`, other = `s2:${process.pid}`;
+		const get = async (id: string) => JSON.parse(await runFile(file, ["list"]) as string).find((t: any) => t.id === id);
+		await runFile(file, ["start", a, "--claim", mine]);
+		expect((await get(a)).claimed_by).toBe(mine);
+		expect(() => runFile(file, ["start", a, "--claim", other])).toThrow("claimed by");
+		expect(() => runFile(file, ["complete", a, "--claim", other])).toThrow("claimed by");
+		await runFile(file, ["start", a, "--claim", other, "--force"]);
+		expect((await get(a)).claimed_by).toBe(other);
+		await runFile(file, ["start", b, "--claim", "s3:2147483646"]);
+		await runFile(file, ["start", a, "--claim", mine, "--force"]);
+		await runFile(file, ["start", b, "--claim", mine]); // dead pid claim ignored
+		await runFile(file, ["release", "--claim", "s9:1"]);
+		expect((await get(a)).claimed_by).toBe(mine);
+		await runFile(file, ["complete", a, "--claim", mine]);
+		expect((await get(a)).claimed_by).toBeUndefined();
+		await runFile(file, ["release", "--claim", mine]);
+		expect((await get(b)).claimed_by).toBeUndefined();
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("claims: survive a sync pull and never reach adapter.create", async () => {
+	const { dir, file, remote, adapter } = setup();
+	try {
+		const id = (await runFile(file, ["create", "a"]) as string).split(" ").pop()!;
+		await runFile(file, ["start", id, "--claim", "s1:1"]);
+		await sync(file, dir, adapter);
+		expect([...remote.values()][0].claimed_by).toBeUndefined();
+		[...remote.values()][0].name = "renamed";
+		await sync(file, dir, adapter);
+		expect(JSON.parse(await runFile(file, ["list"]) as string)[0]).toMatchObject({ name: "renamed", claimed_by: "s1:1" });
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});

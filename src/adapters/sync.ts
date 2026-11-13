@@ -46,7 +46,8 @@ export async function sync(file: string, base: string, adapter: Adapter): Promis
 	const depth = (t: Task, m: Map<string, Task>, n = 0): number => t.parent && m.has(t.parent) && n < 50 ? depth(m.get(t.parent)!, m, n + 1) + 1 : 0;
 	for (const t of [...local].sort((a, b) => depth(a, byLocal) - depth(b, byLocal))) {
 		if (toRemote.has(t.id)) continue;
-		const id = await adapter.create({ ...t, parent: t.parent && toRemote.get(t.parent) });
+		// Only synced fields go out, so local-only ones (claimed_by) never reach the adapter.
+		const id = await adapter.create({ id: t.id, ...Object.fromEntries((adapter.fields ?? fields).map((f) => [f, t[f]])), parent: t.parent && toRemote.get(t.parent) } as Task);
 		toRemote.set(t.id, id); toLocal.set(id, t.id);
 		links.push({ local: t.id, remote: id, base: norm(t) });
 	}

@@ -12,10 +12,11 @@ export interface Task {
 	description?: string;
 	parent?: string;
 	result?: string;
+	claimed_by?: string; // "<sessionId>:<pid>"; local only, never synced
 }
 
 const date = /^\d{4}-\d{2}-\d{2}$/;
-const optional = ["priority", "created", "completed_date", "description", "parent", "result"] as const;
+const optional = ["priority", "created", "completed_date", "description", "parent", "result", "claimed_by"] as const;
 
 // Validates a parsed JSONL record and returns it as a Task; unknown keys are rejected so typos never pass silently.
 export function toTask(record: any): Task {
@@ -33,7 +34,7 @@ export function toTask(record: any): Task {
 
 // Drops empty optional fields so records stay minimal and stable.
 // Keys are written in schema order so every record reads the same.
-const order = ["id", "name", "completed", "priority", "created", "completed_date", "started_at", "description", "parent", "result"];
+const order = ["id", "name", "completed", "priority", "created", "completed_date", "started_at", "description", "parent", "result", "claimed_by"];
 export const clean = (task: Task): Task => Object.fromEntries(Object.entries(task).sort(([a], [b]) => order.indexOf(a) - order.indexOf(b)).filter(([key, value]) => value !== undefined && (value !== "" || key === "name"))) as Task;
 
 // Parses one todo.txt line (import).
