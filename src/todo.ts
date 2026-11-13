@@ -13,6 +13,7 @@ export interface Task {
 	parent?: string;
 	result?: string;
 	claimed_by?: string; // "<sessionId>:<pid>"; local only, never synced
+	blocked_by?: string[]; // ids of tasks that must complete first; local only
 }
 
 const date = /^\d{4}-\d{2}-\d{2}$/;
@@ -21,12 +22,13 @@ const optional = ["priority", "created", "completed_date", "description", "paren
 // Validates a parsed JSONL record and returns it as a Task; unknown keys are rejected so typos never pass silently.
 export function toTask(record: any): Task {
 	if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error("not an object");
-	for (const key of Object.keys(record)) if (!["id", "name", "completed", "started_at", ...optional].includes(key)) throw new Error(`unknown key ${key}`);
+	for (const key of Object.keys(record)) if (!["id", "name", "completed", "started_at", "blocked_by", ...optional].includes(key)) throw new Error(`unknown key ${key}`);
 	if (typeof record.id !== "string" || !record.id) throw new Error("bad id");
 	if (typeof record.name !== "string" || !record.name.trim() || /[\r\n]/.test(record.name)) throw new Error("bad name");
 	if (typeof record.completed !== "boolean") throw new Error("bad completed");
 	if (record.started_at !== null && typeof record.started_at !== "string") throw new Error("bad started_at");
 	for (const key of optional) if (record[key] !== undefined && typeof record[key] !== "string") throw new Error(`bad ${key}`);
+	if (record.blocked_by !== undefined && (!Array.isArray(record.blocked_by) || record.blocked_by.some((id: any) => typeof id !== "string"))) throw new Error("bad blocked_by");
 	if (record.priority !== undefined && !/^[A-Z]$/.test(record.priority)) throw new Error("bad priority");
 	for (const key of ["created", "completed_date"] as const) if (record[key] !== undefined && !date.test(record[key])) throw new Error(`bad ${key}`);
 	return record;
@@ -34,8 +36,8 @@ export function toTask(record: any): Task {
 
 // Drops empty optional fields so records stay minimal and stable.
 // Keys are written in schema order so every record reads the same.
-const order = ["id", "name", "completed", "priority", "created", "completed_date", "started_at", "description", "parent", "result", "claimed_by"];
-export const clean = (task: Task): Task => Object.fromEntries(Object.entries(task).sort(([a], [b]) => order.indexOf(a) - order.indexOf(b)).filter(([key, value]) => value !== undefined && (value !== "" || key === "name"))) as Task;
+const order = ["id", "name", "completed", "priority", "created", "completed_date", "started_at", "description", "parent", "result", "claimed_by", "blocked_by"];
+export const clean = (task: Task): Task => Object.fromEntries(Object.entries(task).sort(([a], [b]) => order.indexOf(a) - order.indexOf(b)).filter(([key, value]) => value !== undefined && (value !== "" || key === "name") && !(Array.isArray(value) && !value.length))) as Task;
 
 // Parses one todo.txt line (import).
 export function parseTodo(line: string): Task {

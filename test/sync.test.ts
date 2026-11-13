@@ -137,3 +137,28 @@ test("claims: survive a sync pull and never reach adapter.create", async () => {
 		expect(JSON.parse(await runFile(file, ["list"]) as string)[0]).toMatchObject({ name: "renamed", claimed_by: "s1:1" });
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("blocked_by: ready query, claims, self/cycle rejected, multiple, clear", async () => {
+	const { dir, file } = setup();
+	try {
+		const mk = async (n: string, ...o: string[]) => (await runFile(file, ["create", n, ...o]) as string).split(" ").pop()!;
+		const ready = async () => JSON.parse(await runFile(file, ["ready"]) as string).map((t: any) => t.id);
+		const list = async () => JSON.parse(await runFile(file, ["list"]) as string);
+		const a = await mk("a"), b = await mk("b", "--blocked-by", a);
+		expect(await ready()).toEqual([a]);
+		await runFile(file, ["complete", a]);
+		expect(await ready()).toEqual([b]);
+		await runFile(file, ["start", b, "--claim", `s1:${process.pid}`]);
+		expect(await ready()).toEqual([]);
+		const c = await mk("c"), d = await mk("d");
+		expect(() => runFile(file, ["edit", c, "--blocked-by", c])).toThrow("cycle");
+		await runFile(file, ["edit", c, "--blocked-by", d]);
+		expect(() => runFile(file, ["edit", d, "--blocked-by", c])).toThrow("cycle");
+		expect(() => runFile(file, ["edit", d, "--blocked-by", "nope"])).toThrow("not found");
+		const e = await mk("e", "--blocked-by", `${c},${d}`);
+		expect((await list()).find((t: any) => t.id === e).blocked_by).toEqual([c, d]);
+		expect(await ready()).toEqual([d]);
+		await runFile(file, ["edit", e, "--blocked-by", ""]);
+		expect((await list()).find((t: any) => t.id === e).blocked_by).toBeUndefined();
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});

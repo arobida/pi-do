@@ -31,9 +31,9 @@ export default function taskPanel(pi: ExtensionAPI) {
 	const claim = (ctx: ExtensionContext) => `${ctx.sessionManager.getSessionId()}:${process.pid}`;
 	async function run(ctx: ExtensionContext, args: string[], signal?: AbortSignal, global = false): Promise<string> {
 		const s = settings(ctx, global), file = storeFile(ctx, s);
-		if (args[0] === "list") await syncAll(ctx, global);
+		if (args[0] === "list" || args[0] === "ready") await syncAll(ctx, global);
 		const out = await runFile(file, args);
-		if (!["list", "export"].includes(args[0])) await syncAll(ctx, global);
+		if (!["list", "ready", "export"].includes(args[0])) await syncAll(ctx, global);
 		return out;
 	}
 	// Adapters with sync on mirror the pi-do store; runs are chained so two syncs never interleave.
@@ -88,31 +88,33 @@ export default function taskPanel(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo_task",
 		label: "Tasks",
-		description: "Manage tasks with list, create, start, complete, edit, link (pido:// Markdown link for a task), or resolve (read a pido:// link). Storage defaults to a temporary session file; Dex can sync via the adapters config.",
+		description: "Manage tasks with list, ready (open, unclaimed, unblocked), create, start, complete, edit, link (pido:// Markdown link for a task), or resolve (read a pido:// link). Storage defaults to a temporary session file; Dex can sync via the adapters config.",
 		parameters: Type.Object({
-			action: Type.Union([Type.Literal("list"), Type.Literal("create"), Type.Literal("start"), Type.Literal("complete"), Type.Literal("edit"), Type.Literal("link"), Type.Literal("resolve")]),
+			action: Type.Union([Type.Literal("list"), Type.Literal("ready"), Type.Literal("create"), Type.Literal("start"), Type.Literal("complete"), Type.Literal("edit"), Type.Literal("link"), Type.Literal("resolve")]),
 			id: Type.Optional(Type.String({ description: "Task ID for start, complete, edit, or link" })),
 			name: Type.Optional(Type.String({ description: "Task name for create or edit" })),
 			description: Type.Optional(Type.String({ description: "Task details for create or edit" })),
 			parent: Type.Optional(Type.String({ description: "ID of an existing task to nest under (not free text)" })),
+			blocked_by: Type.Optional(Type.String({ description: "Comma-separated IDs of tasks that must complete first; replaces the list on edit, empty clears" })),
 			result: Type.Optional(Type.String({ description: "Completion result" })),
 			url: Type.Optional(Type.String({ description: "pido://<project-id>/<task-id> link for resolve" })),
 			force: Type.Optional(Type.Boolean({ description: "Start or complete a task another live session has claimed" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const { action, id, name, description, parent, result, url, force } = params;
+			const { action, id, name, description, parent, blocked_by, result, url, force } = params;
 			if (action === "link" || action === "resolve") {
 				if (action === "link" ? !id?.trim() : !url?.trim()) throw new Error(`${action} requires ${action === "link" ? "an id" : "a url"}`);
 				return { content: [{ type: "text", text: action === "link" ? link(ctx, id!) : resolveLink(url!) }], details: {} };
 			}
 			if (action === "create" && !name?.trim()) throw new Error("create requires a name");
 			if (["start", "complete", "edit"].includes(action) && !id?.trim()) throw new Error(`${action} requires an id`);
-			if (action === "edit" && name === undefined && description === undefined) throw new Error("edit requires a name or description");
+			if (action === "edit" && name === undefined && description === undefined && blocked_by === undefined) throw new Error("edit requires a name, description or blocked_by");
 			if (name !== undefined && (action === "create" || action === "edit")) checkName(name);
 			let args: string[];
 			if (action === "list") args = ["list", "--all", "--json"];
-			else if (action === "create") args = ["create", name!, ...(description !== undefined ? ["--description", description] : []), ...(parent ? ["--parent", parent] : [])];
-			else if (action === "edit") args = ["edit", id!, ...(name !== undefined ? ["--name", name] : []), ...(description !== undefined ? ["--description", description] : [])];
+			else if (action === "ready") args = ["ready"];
+			else if (action === "create") args = ["create", name!, ...(description !== undefined ? ["--description", description] : []), ...(parent ? ["--parent", parent] : []), ...(blocked_by !== undefined ? ["--blocked-by", blocked_by] : [])];
+			else if (action === "edit") args = ["edit", id!, ...(name !== undefined ? ["--name", name] : []), ...(description !== undefined ? ["--description", description] : []), ...(blocked_by !== undefined ? ["--blocked-by", blocked_by] : [])];
 			else if (action === "complete") args = ["complete", id!, "--result", result || "Completed", "--claim", claim(ctx), "--no-commit"];
 			else args = ["start", id!, "--claim", claim(ctx)];
 			if (force && (action === "start" || action === "complete")) args.push("--force");

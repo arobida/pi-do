@@ -15,11 +15,26 @@ function checkParent(items: Task[], id: string, parent?: string) {
 	}
 }
 
+export class BlockerError extends Error {}
+// Blockers must exist, not include the task itself, and not lead back to it through their own blockers.
+function checkBlockers(items: Task[], id: string, blockers: string[] = []) {
+	for (const b of blockers) {
+		if (!items.some((item) => item.id === b)) throw new BlockerError(`Blocker task not found: ${b}`);
+		const seen = new Set<string>(), todo = [b];
+		for (let x = todo.pop(); x; x = todo.pop()) {
+			if (x === id) throw new BlockerError(`Blocker cycle: ${b} is or depends on ${id}`);
+			if (!seen.has(x)) { seen.add(x); todo.push(...(items.find((item) => item.id === x)?.blocked_by ?? [])); }
+		}
+	}
+}
+const live = (task: Task) => !!task.claimed_by && isAlive(Number(task.claimed_by.split(":").pop()));
+const ids = (s?: string) => (s ? s.split(",").map((x) => x.trim()).filter(Boolean) : undefined);
+
 // Runs a list/export/import/create/start/complete/edit action against a pi-do JSONL todos file.
 export function runFile(file: string, args: string[]): string | Promise<string> {
 	const [action, value] = args;
 	if (action !== "list" && action !== "export") mkdirSync(dirname(file), { recursive: true });
-	return action === "list" || action === "export" ? mutate() : withLock(file, mutate);
+	return action === "list" || action === "ready" || action === "export" ? mutate() : withLock(file, mutate);
 	function mutate(): string {
 	let items: Task[] = [];
 	try {
@@ -38,6 +53,7 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 		return JSON.stringify({ text, skipped });
 	}
 	if (action === "list") return JSON.stringify(items);
+	if (action === "ready") return JSON.stringify(items.filter((t) => !t.completed && !live(t) && (t.blocked_by ?? []).every((b) => items.find((i) => i.id === b)?.completed ?? true)));
 	const save = () => { const temp = `${file}.${randomUUID()}.tmp`; writeFileSync(temp, items.map((task) => JSON.stringify(clean(task)) + "\n").join(""), { mode: 0o600 }); renameSync(temp, file); };
 	const today = () => new Date().toISOString().slice(0, 10);
 	if (action === "import") {
@@ -87,7 +103,8 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 	if (action === "create") {
 		const parent = option("--parent");
 		checkParent(items, "", parent);
-		task = { id: randomUUID(), name: value, completed: false, created: today(), started_at: null, description: option("--description"), parent };
+		task = { id: randomUUID(), name: value, completed: false, created: today(), started_at: null, description: option("--description"), parent, blocked_by: ids(option("--blocked-by")) };
+		checkBlockers(items, task.id, task.blocked_by);
 	} else {
 		index = items.findIndex((item) => item?.id === value);
 		const found = items[index];
@@ -95,10 +112,10 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 		task = found;
 		const claim = option("--claim"), owner = found.claimed_by;
 		// shortcut: a reused pid keeps a claim looking live until --force or release; upgrade by storing a process start time.
-		if ((action === "start" || action === "complete") && claim && owner && owner !== claim && isAlive(Number(owner.split(":").pop())) && !option("--force")) throw new Error(`Task ${value} is claimed by ${owner}; pass force to override`);
+		if ((action === "start" || action === "complete") && claim && owner && owner !== claim && live(found) && !option("--force")) throw new Error(`Task ${value} is claimed by ${owner}; pass force to override`);
 		if (action === "start") { task.started_at = new Date().toISOString(); if (claim) task.claimed_by = claim; }
 		else if (action === "complete") { task.claimed_by = undefined; task.completed = true; task.completed_date ||= today(); task.result = option("--result"); }
-		else if (action === "edit") { if (option("--name") !== undefined) task.name = option("--name")!; if (option("--description") !== undefined) task.description = option("--description"); }
+		else if (action === "edit") { if (option("--name") !== undefined) task.name = option("--name")!; if (option("--description") !== undefined) task.description = option("--description"); if (option("--blocked-by") !== undefined) { task.blocked_by = ids(option("--blocked-by")); checkBlockers(items, task.id, task.blocked_by); } }
 		else throw new Error(`Unknown action: ${action}`);
 	}
 	if (action === "create" || (action === "edit" && option("--name") !== undefined)) checkName(task.name);
