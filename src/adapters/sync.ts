@@ -3,7 +3,7 @@ import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import { type Task, toTask } from "../todo.ts";
 import { randomUUID } from "node:crypto";
 import { readJsonl, withLock } from "../util.ts";
-import { runFile } from "../tasks.ts";
+import { ParentError, runFile } from "../tasks.ts";
 
 // An external todo app. Tasks use pi-do's shape; ids are the app's own.
 export interface Adapter {
@@ -37,7 +37,11 @@ export async function sync(file: string, base: string, adapter: Adapter): Promis
 	const byLocal = new Map(local.map((t) => [t.id, t])), byRemote = new Map(remote.map((t) => [t.id, t]));
 	const toRemote = new Map(links.map((l) => [l.local, l.remote])), toLocal = new Map(links.map((l) => [l.remote, l.local]));
 	const norm = (t: Task): Task => ({ id: t.id, name: t.name, completed: t.completed, started_at: t.started_at ?? null, description: t.description || undefined, parent: t.parent || undefined, result: t.result || undefined });
-	const put = (t: Task) => runFile(file, ["put", JSON.stringify(t)]);
+	// A rejected parent is cleared ("" overrides the stored value) so one bad link doesn't abort the sync. Returns the saved record.
+	const put = async (t: Task): Promise<Task> => {
+		try { await runFile(file, ["put", JSON.stringify(t)]); } catch (e) { if (!(e instanceof ParentError)) throw e; await runFile(file, ["put", JSON.stringify({ ...t, parent: "" })]); }
+		return norm(JSON.parse(await runFile(file, ["list"]) as string).find((x: Task) => x.id === t.id));
+	};
 	// Parents first, so a child's parent is already linked when it is created.
 	const depth = (t: Task, m: Map<string, Task>, n = 0): number => t.parent && m.has(t.parent) && n < 50 ? depth(m.get(t.parent)!, m, n + 1) + 1 : 0;
 	for (const t of [...local].sort((a, b) => depth(a, byLocal) - depth(b, byLocal))) {
@@ -49,9 +53,9 @@ export async function sync(file: string, base: string, adapter: Adapter): Promis
 	for (const r of [...remote].sort((a, b) => depth(a, byRemote) - depth(b, byRemote))) {
 		if (toLocal.has(r.id)) continue;
 		const t = norm({ ...r, id: crypto.randomUUID(), parent: r.parent && toLocal.get(r.parent) });
-		await put(t);
+		const saved = await put(t);
 		toRemote.set(t.id, r.id); toLocal.set(r.id, t.id);
-		links.push({ local: t.id, remote: r.id, base: t });
+		links.push({ local: t.id, remote: r.id, base: saved });
 	}
 	for (const link of links) {
 		const l = byLocal.get(link.local), r = byRemote.get(link.remote);
@@ -64,8 +68,7 @@ export async function sync(file: string, base: string, adapter: Adapter): Promis
 			else if (rv[f] !== b[f]) (pull as Record<string, unknown>)[f] = rv[f];
 		}
 		if (Object.keys(push).length) await adapter.update(r.id, { ...push, parent: push.parent && toRemote.get(push.parent), result: lv.result });
-		if (Object.keys(pull).length) await put({ id: lv.id, ...Object.fromEntries(Object.entries(pull).map(([k, v]) => [k, v ?? ""])) } as Task);
-		link.base = { ...lv, ...pull };
+		link.base = Object.keys(pull).length ? await put({ id: lv.id, ...Object.fromEntries(Object.entries(pull).map(([k, v]) => [k, v ?? ""])) } as Task) : { ...lv };
 	}
 	} finally {
 		const temp = `${linksFile}.${randomUUID()}.tmp`;

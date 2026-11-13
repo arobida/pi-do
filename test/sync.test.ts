@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, rmSync, readFileSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { sync } from "../src/adapters/sync.ts";
 import { runFile } from "../src/tasks.ts";
@@ -60,5 +60,42 @@ test("export: names todo.txt would misread are skipped and reported, rest export
 		const { text, skipped } = JSON.parse(await runFile(file, ["export"]) as string);
 		expect(text).toContain("fine"); expect(text).not.toContain("x marks");
 		expect(skipped).toEqual(["#bad x marks"]);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("put/import: missing parent rejected, cycle rejected on put", async () => {
+	const { dir, file } = setup();
+	try {
+		await expect(runFile(file, ["put", JSON.stringify({ id: "a", name: "a", completed: false, started_at: null, parent: "nope" })])).rejects.toThrow("Parent task not found");
+		await expect(runFile(file, ["import", "a piparent:nope piid:a"])).rejects.toThrow("Parent task not found");
+		await runFile(file, ["put", JSON.stringify({ id: "a", name: "a", completed: false, started_at: null })]);
+		await runFile(file, ["put", JSON.stringify({ id: "b", name: "b", completed: false, started_at: null, parent: "a" })]);
+		await expect(runFile(file, ["put", JSON.stringify({ id: "a", parent: "b" })])).rejects.toThrow("Parent cycle");
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("sync: remote parent cycle still finishes, rejected parent not stored", async () => {
+	const { dir, file, remote, adapter } = setup();
+	try {
+		remote.set("x", { id: "x", name: "x", completed: false, started_at: null, parent: "y" });
+		remote.set("y", { id: "y", name: "y", completed: false, started_at: null, parent: "x" });
+		remote.set("z", { id: "z", name: "z", completed: false, started_at: null });
+		await sync(file, dir, adapter);
+		const list = JSON.parse(await runFile(file, ["list"]) as string);
+		expect(list).toHaveLength(3);
+		expect(list.filter((t: any) => t.parent)).toHaveLength(1);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("sync: linked task with dangling parent takes remote update and parent is cleared", async () => {
+	const { dir, file, remote, adapter } = setup();
+	try {
+		await runFile(file, ["create", "a"]); await sync(file, dir, adapter);
+		const [r] = remote.values(); r.name = "renamed";
+		const rows = JSON.parse(await runFile(file, ["list"]) as string);
+		writeFileSync(file, JSON.stringify({ ...rows[0], parent: "ghost" }) + "\n");
+		await sync(file, dir, adapter);
+		const [t] = JSON.parse(await runFile(file, ["list"]) as string);
+		expect(t.name).toBe("renamed"); expect(t.parent).toBeUndefined();
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });

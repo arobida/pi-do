@@ -4,6 +4,17 @@ import { randomUUID } from "node:crypto";
 import { checkName, clean, parseTodo, todoLine, toTask, type Task } from "./todo.ts";
 import { withLock } from "./util.ts";
 
+export class ParentError extends Error {}
+// A parent must exist and must not be the task itself or one of its descendants.
+function checkParent(items: Task[], id: string, parent?: string) {
+	const seen = new Set<string>();
+	for (let p = parent; p; p = items.find((item) => item.id === p)?.parent) {
+		if (p === id || seen.has(p)) throw new ParentError(`Parent cycle: ${parent} is or descends from ${id}`);
+		seen.add(p);
+		if (!items.some((item) => item.id === p)) throw new ParentError(`Parent task not found: ${p} (parent must be an existing task id; put details in description)`);
+	}
+}
+
 // Runs a list/export/import/create/start/complete/edit action against a pi-do JSONL todos file.
 export function runFile(file: string, args: string[]): string | Promise<string> {
 	const [action, value] = args;
@@ -42,6 +53,8 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 			if (ids.has(task.id)) continue;
 			ids.add(task.id); items.push(task); added++;
 		}
+		// Only new tasks: an old dangling parent must not block every future import.
+		for (const task of items.slice(items.length - added)) checkParent(items, task.id, task.parent);
 		if (added) save();
 		return `Imported ${added} tasks`;
 	}
@@ -54,6 +67,7 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 		const merged: any = { ...old, ...task };
 		merged.started_at ??= null;
 		merged.completed_date = merged.completed ? merged.completed_date || today() : undefined;
+		checkParent(items, merged.id, merged.parent);
 		items[at < 0 ? items.length : at] = toTask(clean(merged));
 		save();
 		return `put: ${task.id}`;
@@ -66,7 +80,7 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 	let index = items.length;
 	if (action === "create") {
 		const parent = option("--parent");
-		if (parent && !items.some((item) => item?.id === parent)) throw new Error(`Parent task not found: ${parent} (parent must be an existing task id; put details in description)`);
+		checkParent(items, "", parent);
 		task = { id: randomUUID(), name: value, completed: false, created: today(), started_at: null, description: option("--description"), parent };
 	} else {
 		index = items.findIndex((item) => item?.id === value);
