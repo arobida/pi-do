@@ -3,7 +3,6 @@ import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync
 import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
-import { todoLine } from "./todo.ts";
 import { home, readJsonl } from "./util.ts";
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
@@ -82,7 +81,7 @@ export function settings(ctx: ExtensionContext, forceGlobal = false): Settings {
 	return { adapters: config.adapters ?? {}, file: process.env.PI_DO_FILE || config.file, scope: temp ? "temp" : scope, base, local, name, id, registered: !!record };
 }
 
-export const helloWorld = () => JSON.stringify({ todo: todoLine({ id: randomUUID(), name: "Hello World", completed: false, started_at: null }, undefined) }) + "\n";
+export const helloWorld = () => JSON.stringify({ id: randomUUID(), name: "Hello World", completed: false, created: new Date().toISOString().slice(0, 10), started_at: null }) + "\n";
 
 // Resolves the todos file, creating the pi-do folder, config, list index, project registration and Hello World todo on first use.
 export function storeFile(ctx: ExtensionContext, s: Settings): string {

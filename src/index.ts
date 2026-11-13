@@ -91,7 +91,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 			action: Type.Union([Type.Literal("list"), Type.Literal("create"), Type.Literal("start"), Type.Literal("complete"), Type.Literal("edit")]),
 			id: Type.Optional(Type.String({ description: "Task ID for start, complete, or edit" })),
 			name: Type.Optional(Type.String({ description: "Task name for create or edit" })),
-			description: Type.Optional(Type.String()),
+			description: Type.Optional(Type.String({ description: "Task details for create or edit" })),
 			parent: Type.Optional(Type.String({ description: "Parent task ID when creating" })),
 			result: Type.Optional(Type.String({ description: "Completion result" })),
 		}),

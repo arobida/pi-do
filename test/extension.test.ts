@@ -54,11 +54,12 @@ test("file backend persists task operations without Dex", async () => {
   const { readFileSync, writeFileSync } = await import("node:fs");
   writeFileSync(process.env.PI_DO_FILE!, ["(A) 2024-01-01 Call Mom +Family @phone", "Other task"].map(todo => JSON.stringify({ todo })).join("\n") + "\n");
   const imported = JSON.parse(await run({ action: "list" }));
-  expect(imported[0].name).toBe("(A) 2024-01-01 Call Mom +Family @phone");
+  expect(imported[0]).toMatchObject({ name: "Call Mom +Family @phone", priority: "A", created: "2024-01-01", completed: false });
   await run({ action: "complete", id: imported[0].id });
   const records = readFileSync(process.env.PI_DO_FILE!, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
-  expect(records[0].todo).toMatch(/^x \d{4}-\d{2}-\d{2} 2024-01-01 Call Mom \+Family @phone pri:A /);
-  expect(records[1]).toEqual({ todo: "Other task" });
+  // Legacy {"todo"} records are rewritten as one structured object each.
+  expect(records[0]).toMatchObject({ name: "Call Mom +Family @phone", priority: "A", created: "2024-01-01", completed: true, completed_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) });
+  expect(records[1]).toEqual({ id: imported[1].id, name: "Other task", completed: false, started_at: null });
   const id = (await run({ action: "create", name: "one", description: "details" })).split(" ").pop();
   await run({ action: "start", id });
   await run({ action: "edit", id, name: "updated" });
@@ -67,10 +68,10 @@ test("file backend persists task operations without Dex", async () => {
   expect(tasks).toHaveLength(3);
   expect(tasks[2]).toMatchObject({ id, name: "updated", description: "details", completed: true, result: "done" });
   expect(tasks[2].started_at).toBeTruthy();
-  expect(readFileSync(process.env.PI_DO_FILE!, "utf8")).toContain("updated piid:");
+  expect(JSON.parse(readFileSync(process.env.PI_DO_FILE!, "utf8").trimEnd().split("\n")[2])).toMatchObject({ id, name: "updated", description: "details", result: "done" });
   await command.handler("export todo.txt", ctx);
   const exported = readFileSync(join(dir, "todo.txt"), "utf8");
-  expect(exported).toBe(readFileSync(process.env.PI_DO_FILE!, "utf8").trimEnd().split("\n").map(line => JSON.parse(line).todo).join("\n") + "\n");
+  expect(exported.split("\n")[0]).toMatch(/^x \d{4}-\d{2}-\d{2} 2024-01-01 Call Mom \+Family @phone pri:A piid:/);
   await command.handler("export todo.txt", ctx);
   expect(notifications.at(-1)).toContain("EEXIST");
   expect(readFileSync(join(dir, "todo.txt"), "utf8")).toBe(exported);
@@ -202,7 +203,7 @@ test("config.json layers: global < project < env, scope picks storage", async ()
   writeFileSync(join(root, "config.json"), "");
   // --global export/import targets the global store explicitly.
   await command.handler("export out.txt --global", ctx);
-  expect(readFileSync(join(cwd, "out.txt"), "utf8")).toMatch(/^Hello World piid:/);
+  expect(readFileSync(join(cwd, "out.txt"), "utf8")).toMatch(/^\d{4}-\d{2}-\d{2} Hello World piid:/);
   writeFileSync(join(root, "config.json"), JSON.stringify({ backend: "dex" }) + "\n");
   await expect(list()).rejects.toThrow("replaced by");
   writeFileSync(join(root, "config.json"), JSON.stringify({ adapters: { nope: {} } }) + "\n");
@@ -215,33 +216,30 @@ test("config.json layers: global < project < env, scope picks storage", async ()
  }
 });
 
-test("todo.txt <-> JSONL is 1:1: export then import reproduces the store byte for byte", async () => {
+test("todo.txt import/export round-trips through structured records", async () => {
  const { mkdtempSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
  const { tmpdir } = await import("node:os");
  const { join } = await import("node:path");
  const dir = mkdtempSync(join(tmpdir(), "pi-do-map-"));
  const prev = process.env.PI_DO_FILE;
  try {
-  let tool: any, command: any;
-  extension({ registerTool: (t: any) => tool = t, registerCommand: (_n: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {} } as any);
+  let command: any;
+  extension({ registerTool() {}, registerCommand: (_n: string, c: any) => command = c, registerShortcut() {}, on() {}, appendEntry() {} } as any);
   const ctx = { cwd: dir, hasUI: false, isProjectTrusted: () => true, ui: { notify() {} }, sessionManager: { getSessionId: () => "s" } };
-  const todoTxt = ["(A) 2024-01-01 Call Mom +Family @phone due:2024-02-01", "x 2024-01-03 2024-01-01 Done thing pri:B piid:abc", "Plain task with spaces  and ünïcödé"].join("\n") + "\n";
-  writeFileSync(join(dir, "in.txt"), todoTxt);
+  writeFileSync(join(dir, "in.txt"), ["(A) 2024-01-01 Call Mom +Family @phone due:2024-02-01", "x 2024-01-03 2024-01-01 Done thing pri:B piid:abc", "Plain task with spaces  and ünïcödé"].join("\n") + "\n");
   process.env.PI_DO_FILE = join(dir, "a.jsonl");
   await command.handler("import in.txt", ctx);
-  expect(readFileSync(join(dir, "a.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l))).toEqual(todoTxt.trimEnd().split("\n").map((todo) => ({ todo })));
+  const records = readFileSync(join(dir, "a.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
+  expect(records[0]).toMatchObject({ name: "Call Mom +Family @phone due:2024-02-01", priority: "A", created: "2024-01-01", completed: false });
+  expect(records[1]).toEqual({ id: "abc", name: "Done thing", completed: true, priority: "B", created: "2024-01-01", completed_date: "2024-01-03", started_at: null });
+  expect(records[2].name).toBe("Plain task with spaces  and ünïcödé");
   await command.handler("export out.txt", ctx);
-  expect(readFileSync(join(dir, "out.txt"), "utf8")).toBe(todoTxt);
-  await command.handler("import out.txt", ctx); // re-import is a no-op
+  expect(readFileSync(join(dir, "out.txt"), "utf8").split("\n")[1]).toBe("x 2024-01-03 2024-01-01 Done thing pri:B piid:abc");
+  await command.handler("import out.txt", ctx); // re-import is a no-op: every line carries its piid
   expect(readFileSync(join(dir, "a.jsonl"), "utf8").trimEnd().split("\n")).toHaveLength(3);
   process.env.PI_DO_FILE = join(dir, "b.jsonl");
   await command.handler("import out.txt", ctx);
   expect(readFileSync(join(dir, "b.jsonl"), "utf8")).toBe(readFileSync(join(dir, "a.jsonl"), "utf8"));
-  // Tool edits keep the mapping: what is exported is exactly what is stored.
-  const [task] = JSON.parse((await tool.execute("c", { action: "list" }, undefined, undefined, ctx)).content[0].text);
-  await tool.execute("c", { action: "complete", id: task.id }, undefined, undefined, ctx);
-  rmSync(join(dir, "out.txt")); await command.handler("export out.txt", ctx);
-  expect(readFileSync(join(dir, "out.txt"), "utf8")).toBe(readFileSync(join(dir, "b.jsonl"), "utf8").trimEnd().split("\n").map((l) => JSON.parse(l).todo).join("\n") + "\n");
  } finally {
   if (prev === undefined) delete process.env.PI_DO_FILE; else process.env.PI_DO_FILE = prev;
   rmSync(dir, { recursive: true, force: true });
@@ -265,10 +263,9 @@ test("audit regressions: names, options, dates, refresh, export ~", async () => 
   const id = (await run({ action: "create", name: "description", description: "--name" })).split(" ").pop();
   expect(JSON.parse(await run({ action: "list" }))[0]).toMatchObject({ name: "description", description: "--name" });
   await run({ action: "complete", id });
-  const old = readFileSync(process.env.PI_DO_FILE!, "utf8").replace(/x \d{4}-\d{2}-\d{2}/, "x 2020-01-01");
-  writeFileSync(process.env.PI_DO_FILE!, JSON.stringify({ todo: JSON.parse(old).todo }) + "\n");
+  writeFileSync(process.env.PI_DO_FILE!, readFileSync(process.env.PI_DO_FILE!, "utf8").replace(/"completed_date":"[^"]+"/, '"completed_date":"2020-01-01"'));
   await run({ action: "complete", id });
-  expect(readFileSync(process.env.PI_DO_FILE!, "utf8")).toContain("x 2020-01-01");
+  expect(readFileSync(process.env.PI_DO_FILE!, "utf8")).toContain('"completed_date":"2020-01-01"');
   failWidget = true;
   expect(await run({ action: "create", name: "survives refresh" })).toContain("Created task");
   expect(existsSync(`${process.env.PI_DO_FILE}.lock`)).toBe(false);
@@ -283,8 +280,7 @@ test("current view shows subtasks of session tasks but not unrelated new tasks",
  const tasks = [{ id: "a", name: "mine", completed: false, started_at: "t" }, { id: "b", name: "sub", completed: false, started_at: null, parent_id: "a" }, { id: "c", name: "subsub", completed: false, started_at: null, parent_id: "b" }, { id: "d", name: "unrelated", completed: false, started_at: null }];
  const { mkdtempSync, writeFileSync } = await import("node:fs");
  const prev = process.env.PI_DO_FILE; process.env.PI_DO_FILE = `${mkdtempSync(`${(await import("node:os")).tmpdir()}/pi-do-view-`)}/t.jsonl`;
- const { todoLine } = await import("../src/todo.ts");
- writeFileSync(process.env.PI_DO_FILE, tasks.map((t: any) => JSON.stringify({ todo: todoLine({ ...t, parent: t.parent_id }, undefined) })).join("\n") + "\n");
+ writeFileSync(process.env.PI_DO_FILE, tasks.map((t: any) => JSON.stringify({ ...t, parent_id: undefined, parent: t.parent_id })).join("\n") + "\n");
  try {
   extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, appendEntry() {}, on: (e: string, h: any) => { if (e === "session_start") start = h; } } as any);
   const ctx = { cwd: process.cwd(), hasUI: true, isProjectTrusted: () => false, ui: { setWidget: (_k: string, f: any) => widget = f, notify() {} }, sessionManager: { getSessionId: () => "s", getEntries: () => [{ type: "custom", customType: "dex-current", data: { id: "a" } }] } };
@@ -365,4 +361,30 @@ test("config.json is JSONC, migrates config.jsonl, keeps $schema on this version
  const refs = Object.values(schema.properties.adapters.properties).map((p: any) => p.$ref);
  expect(refs.sort()).toEqual(readdirSync("src/adapters", { withFileTypes: true }).filter((d) => d.isDirectory()).map((d) => `src/adapters/${d.name}/${d.name}.schema.json`).sort());
  for (const ref of refs) expect(JSON.parse(readFileSync(ref, "utf8")).type).toBe("object");
+});
+
+test("store records are validated; legacy records convert; bad imports write nothing", async () => {
+ const { mkdtempSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
+ const { runFile } = await import("../src/tasks.ts");
+ const dir = mkdtempSync(`${(await import("node:os")).tmpdir()}/pi-do-schema-`), file = `${dir}/t.jsonl`;
+ try {
+  for (const [bad, why] of [["[]", "not an object"], ['{"id":"a","name":"a","completed":false,"started_at":null,"priority":"a"}', "bad priority"], ['{"id":"a","name":"a","completed":false,"started_at":null,"due":"x"}', "unknown key due"], ['{"id":"a","name":"","completed":false,"started_at":null}', "bad name"]]) {
+   writeFileSync(file, bad + "\n");
+   expect(() => runFile(file, ["list"])).toThrow(`line 1: ${why}`);
+  }
+  writeFileSync(file, '{"todo":"(B) 2024-01-01 legacy +p"}\n\n');
+  const [legacy] = JSON.parse(runFile(file, ["list"]) as string);
+  expect(legacy).toEqual({ id: expect.stringMatching(/^line-1-/), name: "legacy +p", completed: false, priority: "B", created: "2024-01-01", started_at: null });
+  const before = readFileSync(file, "utf8");
+  await expect(runFile(file, ["import", "fine\npiid:only"])).rejects.toThrow("Invalid todo.txt line 2");
+  expect(readFileSync(file, "utf8")).toBe(before);
+  await runFile(file, ["import", "same\nsame"]);
+  expect(await runFile(file, ["import", "same"])).toBe("Imported 0 tasks");
+  const records = readFileSync(file, "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
+  expect(records).toHaveLength(2);
+  expect(records[0]).toEqual(legacy); // legacy id kept so sync links survive conversion
+  await runFile(file, ["put", JSON.stringify({ id: legacy.id, name: "renamed", completed: true })]);
+  expect(JSON.parse(runFile(file, ["list"]) as string)[0]).toMatchObject({ name: "renamed", priority: "B", created: "2024-01-01", completed_date: expect.any(String), started_at: null });
+  await expect(runFile(file, ["put", JSON.stringify({ id: "z", name: "z", completed: false, junk: 1 })])).rejects.toThrow("unknown key junk");
+ } finally { rmSync(dir, { recursive: true, force: true }); }
 });

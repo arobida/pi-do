@@ -6,7 +6,7 @@ A standalone task panel for Pi. Exposes the `todo_task` tool and a widget above 
 
 - **Task panel widget** — live task list rendered above the editor; collapsible, with current/project/completed views.
 - **`todo_task` tool** — the agent can create, list, start, edit, and complete tasks on request.
-- **todo.txt format** — task lines support priorities, dates, `+projects` and `@contexts`; pi-do metadata travels in `piid:`, `pistart:` and related tags.
+- **todo.txt format** — import/export todo.txt lines; priority, dates and pi-do fields are stored as separate JSON keys.
 - **One store, synced adapters** — tasks live in pi-do's JSONL file; an optional Dex adapter syncs both ways via the `dex` CLI.
 - **Export** — dump the store to a plain todo.txt file with `/todos export <path>`.
 - **Live reload** — the panel watches task storage and refreshes when other agents change it.
@@ -31,7 +31,7 @@ Until then, install from a local checkout (see [Contributing](CONTRIBUTING.md)).
 - Ask the agent to create, list, start, edit, or complete tasks using `todo_task`.
 - `/todos [current|project|completed]` selects and displays a view.
 - `/todos export <path> [--global]` exports to todo.txt, without overwriting an existing file.
-- `/todos import <path> [--global]` appends todo.txt lines verbatim, skipping lines or `piid:`s already present.
+- `/todos import <path> [--global]` appends todo.txt lines as records, skipping `piid:`s already present.
 - `/todos connect things <token>` saves the Things auth token (see the Things adapter docs).
 - `/todos migrate .pi-do|.agents/pi-do` moves the project-scope store folder (todos, config, index). Trusted projects only; refuses to overwrite.
 - `/todos scope project|global` switches scope and moves the `todos/` folder between the project folder (`.pi-do/` or `.agents/pi-do/`) and `~/.pi-do/projects/<name>.<id>/`. Refuses if the target already has todos. Trusted projects only.
@@ -39,7 +39,7 @@ Until then, install from a local checkout (see [Contributing](CONTRIBUTING.md)).
 - `ctrl+shift+t` collapses or expands the panel.
 - `ctrl+shift+v` cycles views.
 
-Current shows tasks worked on in this session. Newly created top-level tasks remain in the project backlog until started. Tasks are stored as JSONL, one `{"todo":"..."}` object per line. Each `todo` value is a [todo.txt](https://github.com/todotxt/todo.txt) task line; priorities, dates, `+projects` and `@contexts` can be included in the task name. pi-do stores its IDs, start times and optional fields in `piid:`, `pistart:`, `pidesc:`, `piparent:` and `piresult:` metadata tags. Each JSONL line maps 1:1 to a todo.txt line, so export/import round-trip exactly. Avoid concurrent writers to the same file.
+Current shows tasks worked on in this session. Newly created top-level tasks remain in the project backlog until started. Tasks are stored as JSONL, one JSON object per task: `id`, `name`, `completed`, `started_at`, and optional `priority` (A-Z), `created` and `completed_date` (YYYY-MM-DD), `description`, `parent`, `result` (schema: `Task` in `src/todo.ts`). `+projects`, `@contexts` and other `key:value` tags stay in `name`. Export renders each record as a [todo.txt](https://github.com/todotxt/todo.txt) line, with pi-do fields as `piid:`, `pistart:`, `pidesc:`, `piparent:` and `piresult:` tags, so import reads it back. Older `{"todo":"..."}` stores are converted on the next write. Avoid concurrent writers to the same file.
 
 ## Storage
 

@@ -13,7 +13,7 @@ export function dexTodo(task: any): string {
 	if (!name) throw new Error(`Dex task ${task.id} has no name`);
 	const date = typeof task.completed_at === "string" && /^\d{4}-\d{2}-\d{2}/.test(task.completed_at) ? task.completed_at.slice(0, 10) : undefined;
 	if (task.completed && !date) throw new Error(`Dex task ${task.id} has no completion date`);
-	return todoLine({ ...task, name, parent: task.parent_id }, date);
+	return todoLine({ ...task, name, parent: task.parent_id, completed_date: date });
 }
 
 function configured(cwd: string): boolean {
