@@ -382,3 +382,38 @@ test("store records are validated; bad imports write nothing", async () => {
   await expect(runFile(file, ["put", JSON.stringify({ id: "z", name: "z", completed: false, junk: 1 })])).rejects.toThrow("unknown key junk");
  } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("session_shutdown releases claims; force overrides a live claim; link and resolve work", async () => {
+ const { mkdtempSync, rmSync } = await import("node:fs");
+ const { tmpdir } = await import("node:os");
+ const { join } = await import("node:path");
+ const dir = mkdtempSync(join(tmpdir(), "pi-do-claims-")), cwd = join(dir, "proj"), root = join(dir, "home");
+ const env = { home: process.env.PI_DO_HOME, file: process.env.PI_DO_FILE, scope: process.env.PI_DO_SCOPE };
+ process.env.PI_DO_HOME = root; delete process.env.PI_DO_FILE; delete process.env.PI_DO_SCOPE;
+ try {
+  require("node:fs").mkdirSync(cwd);
+  let tool: any; const handlers: any = {};
+  extension({ registerTool: (t: any) => tool = t, registerCommand() {}, registerShortcut() {}, on: (e: string, h: any) => handlers[e] = h, appendEntry() {}, exec() { throw new Error("no dex"); } } as any);
+  const ctxFor = (id: string) => ({ cwd, hasUI: false, isProjectTrusted: () => true, ui: { notify() {} }, sessionManager: { getSessionId: () => id } });
+  const [a, b] = [ctxFor("A"), ctxFor("B")];
+  const run = async (ctx: any, params: any) => (await tool.execute("call", params, undefined, undefined, ctx)).content[0].text;
+  const id = (await run(a, { action: "create", name: "shared" })).split(" ").pop();
+  await run(a, { action: "start", id });
+  await expect(run(b, { action: "start", id })).rejects.toThrow("pass force to override");
+  await run(b, { action: "start", id, force: true });
+  await handlers.session_shutdown({}, a);
+  await expect(run(a, { action: "start", id })).rejects.toThrow("claimed by");
+  await handlers.session_shutdown({}, b);
+  await run(a, { action: "start", id });
+  const ready = JSON.parse(await run(b, { action: "ready" }));
+  expect(ready.map((t: any) => t.id)).not.toContain(id);
+  await handlers.session_shutdown({}, a);
+  expect(JSON.parse(await run(b, { action: "ready" })).map((t: any) => t.id)).toContain(id);
+  const md = await run(a, { action: "link", id });
+  expect(md).toMatch(/^\[shared\]\(pido:\/\//);
+  expect(await run(a, { action: "resolve", url: md.match(/\((pido:[^)]+)\)/)![1] })).toContain("shared");
+ } finally {
+  for (const [k, v] of [["PI_DO_HOME", env.home], ["PI_DO_FILE", env.file], ["PI_DO_SCOPE", env.scope]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
+  rmSync(dir, { recursive: true, force: true });
+ }
+});

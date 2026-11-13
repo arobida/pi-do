@@ -1,4 +1,4 @@
-import { expect, test } from "bun:test";
+import { expect, mock, test } from "bun:test";
 import { mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -79,4 +79,19 @@ test("two waiters on a dead lock never overlap", async () => {
 	expect(log.length).toBe(4);
 	expect(log[1]).toBe(log[0].replace("+", "-"));
 	expect(log[3]).toBe(log[2].replace("+", "-"));
+});
+
+test("takeover restores a lock a new holder took mid-rename and does not run fn", async () => {
+	const real = await import("node:fs");
+	const f = lockFile(), lock = `${f}.lock`;
+	writeFileSync(lock, `${DEAD}:x`);
+	const { renameSync, writeFileSync: write } = real; // captured: the mock replaces the live module
+	let armed = true;
+	// a new live holder replaces the dead lock just before the waiter's rename
+	mock.module("node:fs", () => ({ ...real, renameSync: (from: string, to: string) => { if (armed) { armed = false; write(lock, `${process.pid}:new`); } return renameSync(from, to); } }));
+	const { withLock: locked } = await import("../src/util.ts" + "?restore");
+	let ran = false;
+	await expect(locked(f, () => { ran = true; }, 1)).rejects.toThrow("locked");
+	expect(ran).toBe(false);
+	expect(readFileSync(lock, "utf8")).toBe(`${process.pid}:new`);
 });

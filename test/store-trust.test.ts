@@ -52,3 +52,24 @@ test("pido links round-trip, survive a move, and refuse unregistered stores", as
   rmSync(parent, { recursive: true, force: true });
  }
 });
+
+test("link is refused for a store set via config.file", async () => {
+ const previous = { home: process.env.PI_DO_HOME, file: process.env.PI_DO_FILE };
+ const home = mkdtempSync(join(tmpdir(), "pi-do-home-"));
+ const cwd = mkdtempSync(join(tmpdir(), "pi-do-cwd-"));
+ process.env.PI_DO_HOME = home; delete process.env.PI_DO_FILE;
+ try {
+  const { link, settings, storeFile } = await import("../src/store.ts");
+  const { runFile } = await import("../src/tasks.ts");
+  require("node:fs").writeFileSync(join(home, "config.json"), JSON.stringify({ file: join(cwd, "x.jsonl") }));
+  const ctx = { cwd, hasUI: false, isProjectTrusted: () => true, ui: { notify() {} }, sessionManager: { getSessionId: () => "s" } } as any;
+  const s = settings(ctx);
+  expect(s.file).toBeTruthy();
+  const id = /Created task (\S+)/.exec(await runFile(storeFile(ctx, s), ["create", "T"]))![1];
+  expect(() => link(ctx, id)).toThrow("explicit-file");
+ } finally {
+  for (const [k, v] of [["PI_DO_HOME", previous.home], ["PI_DO_FILE", previous.file]] as const) v === undefined ? delete process.env[k] : (process.env[k] = v);
+  rmSync(home, { recursive: true, force: true });
+  rmSync(cwd, { recursive: true, force: true });
+ }
+});
