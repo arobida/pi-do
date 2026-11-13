@@ -1,23 +1,43 @@
-import { readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { linkSync, readFileSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 
 export const home = (path: string) => path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 
-export async function withLock<T>(file: string, fn: () => T | Promise<T>): Promise<T> {
+export function isAlive(pid: number): boolean {
+	try { process.kill(pid, 0); return true; }
+	catch (error: any) { return error.code !== "ESRCH"; }
+}
+
+// A lock holds "<pid>:<token>"; it is stale when that pid is dead. tries * 25ms is the wait limit (~11s).
+export async function withLock<T>(file: string, fn: () => T | Promise<T>, tries = 440): Promise<T> {
 	const lock = `${file}.lock`;
+	const mine = `${process.pid}:${randomUUID()}`;
 	for (let i = 0; ; i++) {
-		try { writeFileSync(lock, String(process.pid), { flag: "wx" }); break; }
+		try { writeFileSync(lock, mine, { flag: "wx" }); break; }
 		catch (error: any) {
 			if (error.code !== "EEXIST") throw error;
-			// shortcut: a crashed holder's lock is treated as stale after 10s; fine for interactive use.
-			try { if (Date.now() - statSync(lock).mtimeMs > 10_000) { unlinkSync(lock); continue; } } catch {}
-			// ~11s of waiting: outlasts the 10s stale window so a waiter can clear a crashed holder's lock.
-			if (i > 440) throw new Error(`Task file is locked: ${lock}`);
+			let seen: string, pid: number | undefined;
+			try {
+				seen = readFileSync(lock, "utf8");
+				pid = /^(\d+):./.test(seen) ? Number(seen.split(":")[0]) : undefined;
+				// an empty or malformed lock may be mid-write: stale only once it is 5s old.
+				if (pid === undefined ? Date.now() - statSync(lock).mtimeMs > 5_000 : !isAlive(pid)) {
+					// rename is atomic, so one waiter wins; if it moved a new holder's lock, put it back.
+					const stale = `${lock}.${randomUUID()}.stale`;
+					renameSync(lock, stale);
+					try { if (readFileSync(stale, "utf8") !== seen) linkSync(stale, lock); } catch {}
+					try { unlinkSync(stale); } catch {}
+					continue;
+				}
+			} catch {}
+			if (i >= tries) throw new Error(`Task file is locked: ${lock} (held by pid ${pid ?? "unknown"}). If that pid is not a pi-do process, delete the file.`);
 			await new Promise((r) => setTimeout(r, 25));
 		}
 	}
-	try { return await fn(); } finally { try { unlinkSync(lock); } catch {} }
+	try { return await fn(); }
+	finally { try { if (readFileSync(lock, "utf8") === mine) unlinkSync(lock); } catch {} }
 }
 
 // check validates each record and gives it its type; it throws on a bad record.
