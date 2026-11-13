@@ -1,6 +1,6 @@
 # Task-tracker strengths applied to pi-do
 
-This doc compares the strengths listed in `.agents/research/repo-research.md` with pi-do. Rewritten 2026-11-13 and checked against the code after commit `69ecab0`, which moved the store to typed JSONL. The file references below are from that check.
+This doc compares the strengths listed in `docs/research/repo-research.md` with pi-do. Rewritten 2026-11-13 and checked against the code after commit `69ecab0`, which moved the store to typed JSONL. The file references below are from that check.
 
 ## How pi-do works today
 
@@ -47,7 +47,7 @@ This doc compares the strengths listed in `.agents/research/repo-research.md` wi
    - Leave `started_at` alone; it still records when work began.
 5. **Add `blocks` plus a ready filter (#7).** Ready = open, not claimed by a live session, all blockers completed. Goes well with #12: an agent asks for ready work and claims it.
 
-Sources were checked against primary docs and code in `.agents/research/competitor-verification.md`. One more detail from there: `done.txt` and the `t:` threshold tag come from todo.txt clients, not from the todo.txt spec.
+Sources were checked against primary docs and code in `docs/research/competitor-verification.md`. One more detail from there: `done.txt` and the `t:` threshold tag come from todo.txt clients, not from the todo.txt spec.
 
 ## Idea: links from Markdown files to tasks
 

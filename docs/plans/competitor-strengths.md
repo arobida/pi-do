@@ -1,6 +1,6 @@
 # Plan: improvements from the competitor-strengths review
 
-Sources: `.agents/ideas/competitor-strengths.md` and `.agents/research/competitor-verification.md`. Written 2026-11-13. Tracked as [Competitor-strengths plan](pido://79114510-f981-49f5-9929-aa15d25479c9/8c27d83e-6113-4b55-98e0-116be1a33547).
+Sources: `docs/ideas/competitor-strengths.md` and `docs/research/competitor-verification.md`. Written 2026-11-13. Tracked as [Competitor-strengths plan](pido://79114510-f981-49f5-9929-aa15d25479c9/8c27d83e-6113-4b55-98e0-116be1a33547).
 
 ## How the work runs
 

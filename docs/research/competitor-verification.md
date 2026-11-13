@@ -1,6 +1,6 @@
 # Competitor claim check
 
-Checks the tool claims in `.agents/ideas/competitor-strengths.md` against primary sources.
+Checks the tool claims in `docs/ideas/competitor-strengths.md` against primary sources.
 Researched 2026-11-13 from shallow clones of each repo's default branch: beads `526c1c8`, dex `3f55b2a`, taskchampion `b10eeae`, taskwarrior `c564bc3`, todo.txt `1d90c08`, Backlog.md `52b4ea3`. Links point at `main`, so line numbers can drift.
 
 ## Verdicts
