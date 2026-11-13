@@ -1,91 +1,77 @@
 # Task-tracker strengths applied to pi-do
 
-These are the strengths found in `.agents/research/repo-research.md`, each checked against pi-do. Written 2026-11-12 from the research doc and the codebase map only. The source wasn't opened, so the "How" notes are directions, not checked designs.
+This doc compares the strengths listed in `.agents/research/repo-research.md` with pi-do. Rewritten 2026-11-13 and checked against the code after commit `69ecab0`, which moved the store to typed JSONL. The file references below are from that check.
+
+## How pi-do works today
+
+- **Store.** `<base>/todos/<name>.todos.jsonl` holds one `Task` JSON record per line (`src/store.ts:97`, `src/todo.ts:4`).
+  - Every write rewrites the whole file through a tmp file and `rename` (`src/tasks.ts:30`), inside `withLock` (`src/tasks.ts:11`).
+  - Reads skip a torn last line (`src/util.ts:33`).
+- **Record.** `toTask` rejects unknown keys and checks field types (`src/todo.ts:21`). Status is `completed` plus `started_at`. There's no status enum.
+- **Ids.** New tasks get a `randomUUID()` (`src/tasks.ts:70`). Imported lines without an id get `line-<12 hex>`.
+- **todo.txt.** It's only an import/export format, handled by `parseTodo`/`todoLine` and the `/todos import` and `/todos export` commands (`src/tasks.ts:26,41`).
+- **Sync.** Dex and Things sync both ways on Task fields through `src/adapters/sync.ts`.
 
 ## Strengths, and whether pi-do should use them
 
-| # | Strength (tool) | Use in pi-do? | How |
+| # | Strength (tool) | Status | Notes |
 |---|---|---|---|
-| 1 | **Plain text people can read and edit by hand** (todo.txt) | ✅ Already done | pi-do's store is todo.txt. Keep it that way. |
-| 2 | **One task per line, so git diffs stay small and merges are clean** (Dex JSONL, todo.txt) | ✅ Already done | todo.txt already writes one task per line. If you commit the store, a doc note is enough. |
-| 3 | **Ids that can't clash** (Beads hash ids, Taskwarrior UUIDs) | ✅ Already done | `piid:` already does this. You could shorten them to something like `bd-a1b2` so agents can type them. That's optional. |
-| 4 | **A fixed, typed task record** (Dex Zod) | ✅ Cheap | Check tags in `parseTodo`, and treat bad `piparent:` or `piid:` values as errors instead of letting them through. Leave out Zod unless it's already installed. |
-| 5 | **A result written when a task is completed** (Dex `result`) | ✅ Already done | That's `piresult:`. |
-| 6 | **Task state worked out from fields, with no status enum** (Dex `completed` + `started_at`) | ✅ Already done | `x` plus `pistart:` already work this way. Don't add a status field. |
-| 7 | **A "ready to work on" query** (Beads `bd ready`) | ⚠️ Only if you add dependencies | Add a `piblocks:<id>` tag, stored **on one side only**. Then "ready" is a filter: open tasks whose blockers are all done. It fits in about 10 lines in the task panel. This is the one real feature worth considering. |
-| 8 | **Links stored on both sides** (Dex `blocks`/`blockedBy`, `children`) | ❌ No | Each link change would have to update two lines. Store each link on one side and work out the reverse when reading, as `piparent:` already does. |
-| 9 | **Unknown fields kept, not dropped** (Taskwarrior keeps unrecognized values and user fields) | ✅ Check this | Make sure `todoLine(parseTodo(x))` round-trips tags it doesn't know. If it drops them, that's a data-loss bug, worth one test. |
-| 10 | **A change log, undo and per-property conflict resolution** (TaskChampion) | ❌ Not now | git already covers history and undo for a text file. A change log is worth it only if two machines sync without git. |
-| 11 | **Many kinds of links in an edge table** (Beads, 19 types) | ❌ No | Needs a database. Too much for a todo.txt store. |
-| 12 | **Leases on claimed tasks** (Beads `LeaseExpiresAt`) | ⚠️ Maybe | Useful only if several agents grab tasks at once. `withLock` already stops them writing over each other. A stale `pistart:` could be the lease, with no new field. |
-| 13 | **Deferred tasks** (Beads `DeferUntil`; Taskwarrior `wait`) | ⚠️ Cheap if you want it | Add a `t:YYYY-MM-DD` tag (an existing todo.txt convention) and hide the task until that date. |
-| 14 | **Archiving or compacting finished tasks** (Dex `archive.jsonl`, Beads compaction) | ✅ Cheap | Move `x` lines into `<name>.done.jsonl`, the same idea as todo.txt's `done.txt` so the main file stays small. |
-| 15 | **Urgency ranking** (Taskwarrior) | ❌ No | todo.txt's `(A)` priority is enough. |
-| 16 | **Sync to outside tools** (Dex GitHub/Shortcut; Beads Dolt push) | ✅ Already done | The Dex and Things adapters do this. |
-| 17 | **One-file-per-task Markdown with acceptance criteria** (Backlog.md) | ❌ No | It works against the one-line model. `pidesc:` is enough. |
+| 1 | Plain text people can read (todo.txt) | ✅ Partly | JSONL is readable but awkward to edit by hand. Export to todo.txt covers people who want plain lines. |
+| 2 | One task per line, so diffs stay small (Dex JSONL) | ✅ Done | Keys are written in a fixed order by `clean` (`src/todo.ts:37`), so diffs stay stable. |
+| 3 | Ids that can't clash (Beads, Taskwarrior) | ✅ Done | UUIDs. Short ids would only help a person typing them, and agents paste them, so skip short ids. |
+| 4 | A fixed, typed record (Dex Zod) | ✅ Done | `toTask`. **Gap:** `parent` is checked as an existing id only on `create` (`src/tasks.ts:68`), not on `put`/sync or import. |
+| 5 | A result written on completion (Dex) | ✅ Done | `complete` sets `result` (`src/tasks.ts:77`). |
+| 6 | State worked out from fields (Dex) | ✅ Done | `completed` + `started_at`. Don't add a status field. |
+| 7 | A "ready to work on" query (Beads `bd ready`) | ✅ Worth it | Doesn't exist yet; `parent` is the only relation. Add an optional field `blocks?: string[]` stored on one side. "Ready" = open tasks whose blockers are all completed. That's a new filter in the panel. |
+| 8 | Links stored on both sides (Dex) | ❌ No | Store each link on one side and work out the reverse when reading, as `parent` does. |
+| 9 | Unknown fields kept (Taskwarrior) | ✅ Done | Unknown todo.txt tags (`due:`, `t:`, `+proj`) stay in `name` when imported. The JSONL record rejects unknown keys on purpose. |
+| 10 | Change log, undo (TaskChampion) | ❌ No | Git covers history. |
+| 11 | An edge table with many link types (Beads) | ❌ No | Needs a database. |
+| 12 | Claims on tasks (Beads leases, made event-driven) | ✅ Worth it | Real gap: `start` overwrites `started_at` with no check (`src/tasks.ts:76`), so two agents can claim the same task, and a crashed agent's claim never ends. A time limit can't work, because task length is unpredictable. Instead, release claims on events (see below). Separately, `withLock`'s 10s stale window (`src/util.ts:7-21`) can break a held file lock. |
+| 13 | Deferred tasks (Beads, Taskwarrior `wait`) | ⚠️ Optional | Not present. It would be a `defer_until?: string` field plus a panel filter. |
+| 14 | Archiving finished tasks (Dex; Beads instead summarizes old closed tasks in place) | ✅ Worth it | Not present. Completed tasks stay in the main file, and the panel filters them out (`src/index.ts:51`). |
+| 15 | Urgency ranking (Taskwarrior) | ❌ No | `priority` A–Z is enough. |
+| 16 | Sync to outside tools (Dex, Beads) | ✅ Done | The Dex and Things adapters. |
+| 17 | One Markdown file per task (Backlog.md) | ❌ No | `description` is enough. |
 
 ## Worth doing, smallest first
 
-1. **Round-trip test for unknown tags (#9).** This protects user data.
-2. **Archive to a done file (#14).**
-3. **A `piblocks:` tag plus a ready filter (#7)**, but only if you actually want dependencies.
+1. **Check `parent` on `put` and import (#4).** Sync or import can currently write a dangling parent. Also reject a parent that would create a cycle, as Dex does. Write one test.
+2. **Look at the lock's stale window (#12).** A 10s mtime timeout can break a lock that's still held. Refresh the lock's mtime while holding it, the way Beads renews leases with a heartbeat, or check whether the holder's pid is still alive before removing the lock.
+3. **Archive to `<name>.done.jsonl` (#14).** Move completed tasks out under the lock. Write the done file first, then rewrite the main file.
+   - Readers that need completed tasks (the panel's completed view, export, sync, and the `parent` walk) must also read the done file.
+4. **Event-driven claims (#12).** Add `claimed_by?: string` (the Pi session id), set by `start`.
+   - `start` refuses a task claimed by another live session unless `--force` is passed.
+   - The claim is released when the task is completed, or when the session ends. The `session_shutdown` hook (`src/index.ts:174`) clears that session's claims.
+   - A crash skips `session_shutdown`. To catch that, store the claimer's pid as well (`claimed_by: "<session>:<pid>"`) and treat the claim as free when `process.kill(pid, 0)` fails. This is the same liveness check the file lock should use.
+   - Leave `started_at` alone; it still records when work began.
+5. **Add `blocks` plus a ready filter (#7).** Ready = open, not claimed by a live session, all blockers completed. Goes well with #12: an agent asks for ready work and claims it.
 
-Everything else was skipped on purpose: it either duplicates what git or todo.txt already does, or it needs a database.
+Sources were checked against primary docs and code in `.agents/research/competitor-verification.md`. One more detail from there: `done.txt` and the `t:` threshold tag come from todo.txt clients, not from the todo.txt spec.
 
-## Open question
+## Idea: links from Markdown files to tasks
 
-Nobody has checked yet whether `parseTodo`/`todoLine` keep unknown tags. If they don't, #9 is a live bug where data can be lost.
-
-## Idea: machine-readable links from Markdown files to tasks
-
-Goal: a Markdown file (a plan, spec or note) links to a pi-do task, and the link alone says exactly where the task is. Nothing has to be searched to follow it.
-
-**Format:** a URI that names the store and the task id:
+Goal: a plan or spec links to a task, and the link alone says where the task is.
 
 ```md
-See [fix login bug](pido://<store>/<piid>) for details.
+See [fix login bug](pido://<project-id>/<task-id>).
 ```
 
-- `<store>` says which todo file holds the task: `project` (the repo's store) or `global` (the home store). Either way, the link is enough to open the right file.
-- `<piid>` is the task's existing id. It never changes and is unique, so the link survives edits, reordering and branches. Line numbers would break.
-- The link renders as a normal Markdown link. A tool can read it with one regex: `/pido:\/\/(\w+)\/([\w-]+)/`.
-- Following a link means opening `<store>` and taking the line tagged `piid:<piid>`. That's a direct lookup, not a search.
+- **Use the project's UUID, not a path or scope name.**
+  - The store's path depends on its scope (`src/store.ts:76-82`), and `migrate` moves `todos/` between scopes (`src/store.ts:142`), so path-based links break.
+  - The project id is stable. It's kept in the project's local config.json and in `~/.pi-do/projects/projects.jsonl`.
+- **Following a link:** look up the project id in `projects.jsonl`, resolve its store, then find the task by `id`. If archiving (#14) exists, check the done file next. Otherwise report the link as dead.
+- **Limits:**
+  - Temp-scope stores can't be linked to after the session ends.
+  - Overrides through `PI_DO_FILE` or the `file` setting (`src/store.ts:84`) bypass the registry.
+- **Task → doc:** an optional field `docs?: string[]` holding repo-relative paths with an optional `#heading`. Store it on one side only, as #8 says.
 
-**Task → Markdown:** a task can link to a Markdown file with a `pidoc:` tag:
+## Idea: one file per task state (rejected)
 
-```
-Fix login bug piid:<piid> pidoc:docs/plans/login.md#approach
-```
+The proposal was three files: `todos`, `doing` and `done`. Rejected:
 
-- The path is relative to the repo root, and an optional `#heading` points at a section. Following the link opens the file directly.
-- A task can have more than one `pidoc:` tag.
-- The two directions are independent: a doc linking to a task doesn't require the task to link back. If you want both, add both on purpose. This avoids the two-sided upkeep from #8.
-- Spaces in paths break todo.txt tags, so encode them as `%20`.
-- This needs the unknown-tag round-trip (#9) to work, or the tag gets dropped.
+- `doing` repeats what `started_at` already says, and the two can disagree.
+- Each state change is a move between two files, which can lose or duplicate a task in a crash.
+- Links would have to check three files.
 
-**Dead links:** if the `piid` isn't found, the task was deleted or archived. Check the done file next (#14), then report the link as dead.
-
-**Open question:** are `piid`s short enough to type by hand? If not, this depends on the short-id option in #3.
-
-## Idea: one file per task state
-
-Proposal:
-- `todos.jsonl`: every task that isn't completed
-- `doing.jsonl`: the tasks being worked on now
-- `done.jsonl`: every completed task
-
-**For:**
-- The agent and the panel read only the file they need. `doing` stays tiny.
-- `done` grows forever but never gets in the way. This is the same as #14.
-
-**Against:**
-- Changing a task's state means deleting it from one file and adding it to another. A crash in between loses or duplicates the task, so both writes need `withLock` and a careful order: write the new file first, then remove from the old one.
-- `doing` duplicates information `pistart:` already has (#6). Two sources of truth can disagree.
-- Does `todos` include the `doing` tasks? If it does, they're stored twice. If not, "every open task" means reading two files.
-- Links (`pido://<store>/<piid>`) can't name a file, because the task moves between them. Following a link has to check all three.
-- `.jsonl` replaces todo.txt, so tasks can no longer be edited by hand as plain lines (#1), and the Dex and Things adapters need to change. That's a separate decision. It doesn't come with splitting by state.
-
-**Recommendation:** split into two files, `<name>.todos.jsonl` (open tasks, with `pistart:` marking the doing ones) and `<name>.done.jsonl` (completed tasks). That gets the main benefit with one state move instead of three, and it's the todo.txt convention. Change the format to JSONL only if there's a separate reason.
-
-
-Note: the store file is `<name>.todos.jsonl` (`src/store.ts:95`). Each line is JSON that wraps one todo.txt line, for example `{"todo":"Hello World piid:<uuid>"}`. The todo.txt text inside comes from `todoLine` (`src/todo.ts:22`).
+Archiving completed tasks (#14) gets the useful part: the main file stays small.
