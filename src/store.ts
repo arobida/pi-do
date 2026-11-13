@@ -20,20 +20,15 @@ export function parseJsonc(text: string, path: string): any {
 }
 
 export const writeConfig = (dir: string, config: object) => writeFileSync(join(dir, "config.json"), JSON.stringify({ $schema: schemaUrl, ...config }, null, 2) + "\n");
-// Creates config.json unless it (or a legacy config.jsonl, converted by readConfig) exists.
+// Creates config.json unless it exists.
 const ensureConfig = (dir: string) => { readConfig(dir); if (!existsSync(join(dir, "config.json"))) writeConfig(dir, {}); };
 
-// <dir>/config.json (JSONC). Converts a legacy config.jsonl and keeps "$schema" pointed at this version.
+// <dir>/config.json (JSONC). Keeps "$schema" pointed at this version.
 export function readConfig(dir: string): { adapters?: Record<string, { sync?: boolean }>; file?: string; scope?: string; id?: string } {
-	const path = join(dir, "config.json"), legacy = join(dir, "config.jsonl");
+	const path = join(dir, "config.json");
 	let text: string;
 	try { text = readFileSync(path, "utf8"); }
-	catch (error: any) {
-		if (error.code !== "ENOENT") throw new Error(`Cannot read ${path}: ${error.message}`);
-		if (!existsSync(legacy)) return {};
-		writeConfig(dir, Object.assign({}, ...readJsonl(legacy))); rmSync(legacy);
-		text = readFileSync(path, "utf8");
-	}
+	catch (error: any) { if (error.code === "ENOENT") return {}; throw new Error(`Cannot read ${path}: ${error.message}`); }
 	const config = parseJsonc(text, path);
 	// Text replace, not a rewrite, so the user's comments survive.
 	if (typeof config.$schema === "string" && config.$schema !== schemaUrl) writeFileSync(path, text.replace(JSON.stringify(config.$schema), JSON.stringify(schemaUrl)));
@@ -55,6 +50,13 @@ function addId(dir: string, id: string) {
 	writeFileSync(path, text.replace(/^(\s*(?:\/\/[^\n]*\n\s*|\/\*[\s\S]*?\*\/\s*)*)\{/, `$1{\n  "id": ${JSON.stringify(id)}${comma}`));
 }
 
+// One line of ~/.pi-do/projects/projects.jsonl.
+export interface Project { id: string; name: string; path: string; scope: string; created: string }
+const toProject = (r: Record<string, unknown>): Project => {
+	for (const k of ["id", "name", "path", "scope", "created"]) if (typeof r[k] !== "string") throw new Error(`bad ${k}`);
+	return r as unknown as Project;
+};
+
 export const piDoHome = () => process.env.PI_DO_HOME || join(homedir(), ".pi-do");
 
 export interface Settings { adapters: Record<string, { sync?: boolean }>; file?: string; scope: string; base: string; local: string; name: string; id: string; registered: boolean }
@@ -69,7 +71,7 @@ export function settings(ctx: ExtensionContext, forceGlobal = false): Settings {
 	if (forceGlobal && !trusted) throw new Error("--global requires a trusted project");
 	const local = localDir(cwd);
 	const id: string = (trusted ? readConfig(local).id : undefined) ?? randomUUID();
-	const record = readJsonl(join(root, "projects", "projects.jsonl")).find((p) => p.id === id);
+	const record = readJsonl(join(root, "projects", "projects.jsonl"), toProject).find((p) => p.id === id);
 	const globalConfig = readConfig(root);
 	const scope = forceGlobal ? "global" : process.env.PI_DO_SCOPE || record?.scope || globalConfig.scope || "project";
 	if (!["project", "global", "temp"].includes(scope)) throw new Error(`Invalid pi-do scope: ${scope}`);
@@ -87,7 +89,7 @@ export const helloWorld = () => JSON.stringify({ id: randomUUID(), name: "Hello 
 // Resolves the todos file, creating the pi-do folder, config, list index, project registration and Hello World todo on first use.
 export function storeFile(ctx: ExtensionContext, s: Settings): string {
 	// ~/.pi-do always exists: global config plus the projects registry. Its absence means this run is the installation.
-	const installing = !existsSync(join(piDoHome(), "config.json")) && !existsSync(join(piDoHome(), "config.jsonl"));
+	const installing = !existsSync(join(piDoHome(), "config.json"));
 	mkdirSync(join(piDoHome(), "projects"), { recursive: true });
 	ensureConfig(piDoHome());
 	if (!existsSync(join(piDoHome(), "projects", "projects.jsonl"))) writeFileSync(join(piDoHome(), "projects", "projects.jsonl"), "");
@@ -129,7 +131,7 @@ export function setScope(ctx: ExtensionContext, scope: string): string {
 	const s = settings(ctx), registry = join(piDoHome(), "projects", "projects.jsonl");
 	if (s.file) throw new Error("scope does not apply to an explicit file");
 	storeFile(ctx, s); // registers the project and writes its id if needed
-	const projects = readJsonl(registry);
+	const projects = readJsonl(registry, toProject);
 	const record = projects.find((p) => p.id === s.id)!;
 	if (record.scope === scope) return `Already ${scope} scope`;
 	const [from, to] = scope === "global" ? [s.local, globalDir(s)] : [globalDir(s), s.local];

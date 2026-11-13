@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
-import type { Task } from "../todo.ts";
+import { type Task, toTask } from "../todo.ts";
 import { randomUUID } from "node:crypto";
 import { readJsonl, withLock } from "../util.ts";
 import { runFile } from "../tasks.ts";
@@ -17,6 +17,10 @@ export interface Adapter {
 
 // Each link remembers both ids and the task as of the last sync, so a 3-way compare tells which side changed.
 interface Link { local: string; remote: string; base: Task }
+const toLink = (r: Record<string, unknown>): Link => {
+	if (typeof r.local !== "string" || typeof r.remote !== "string") throw new Error("bad link ids");
+	return { local: r.local, remote: r.remote, base: toTask(r.base) };
+};
 const fields = ["name", "description", "completed", "started_at", "result", "parent"] as const;
 
 // Two-way sync of the pi-do todos file with one adapter. Per field: only one side changed -> copy it; both -> pi-do wins.
@@ -25,7 +29,7 @@ export async function sync(file: string, base: string, adapter: Adapter): Promis
 	const linksFile = join(base, "sync", `${adapter.name}.jsonl`);
 	mkdirSync(join(base, "sync"), { recursive: true });
 	return withLock(linksFile, async () => {
-	const links: Link[] = readJsonl(linksFile);
+	const links = readJsonl(linksFile, toLink);
 	// Links are saved even if a later step throws, so created tasks are never duplicated next sync.
 	try {
 	const local: Task[] = JSON.parse(await runFile(file, ["list"]));
@@ -56,8 +60,8 @@ export async function sync(file: string, base: string, adapter: Adapter): Promis
 		const push: Partial<Task> = {}, pull: Partial<Task> = {};
 		for (const f of adapter.fields ?? fields) {
 			// Skip values the remote already has, so adapters needn't re-read to avoid no-op writes.
-			if (lv[f] !== b[f]) { if (lv[f] !== rv[f]) (push as any)[f] = lv[f]; }
-			else if (rv[f] !== b[f]) (pull as any)[f] = rv[f];
+			if (lv[f] !== b[f]) { if (lv[f] !== rv[f]) (push as Record<string, unknown>)[f] = lv[f]; }
+			else if (rv[f] !== b[f]) (pull as Record<string, unknown>)[f] = rv[f];
 		}
 		if (Object.keys(push).length) await adapter.update(r.id, { ...push, parent: push.parent && toRemote.get(push.parent), result: lv.result });
 		if (Object.keys(pull).length) await put({ id: lv.id, ...Object.fromEntries(Object.entries(pull).map(([k, v]) => [k, v ?? ""])) } as Task);

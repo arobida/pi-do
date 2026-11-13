@@ -20,7 +20,8 @@ export async function withLock<T>(file: string, fn: () => T | Promise<T>): Promi
 	try { return await fn(); } finally { try { unlinkSync(lock); } catch {} }
 }
 
-export function readJsonl(path: string): any[] {
+// check validates each record and gives it its type; it throws on a bad record.
+export function readJsonl<T>(path: string, check: (record: Record<string, unknown>) => T): T[] {
 	let data: string;
 	try { data = readFileSync(path, "utf8"); }
 	catch (error: any) { if (error.code === "ENOENT") return []; throw new Error(`Cannot read ${path}: ${error.message}`); }
@@ -33,6 +34,6 @@ export function readJsonl(path: string): any[] {
 			throw new Error(`Invalid JSON on line ${index + 1} of ${path}`);
 		}
 		if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error(`Invalid record on line ${index + 1} of ${path}`);
-		return [record];
+		try { return [check(record)]; } catch (error: any) { throw new Error(`Invalid record on line ${index + 1} of ${path}: ${error.message}`); }
 	});
 }

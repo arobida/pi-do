@@ -33,7 +33,10 @@ test("readJsonl drops only an unterminated torn last line", async () => {
 	const { mkdtempSync, writeFileSync } = await import("node:fs");
 	const dir = mkdtempSync(`${require("node:os").tmpdir()}/pido-`);
 	writeFileSync(`${dir}/torn.jsonl`, '{"a":1}\n{"b":');
-	expect(readJsonl(`${dir}/torn.jsonl`)).toEqual([{ a: 1 }]);
+	expect(readJsonl(`${dir}/torn.jsonl`, (r) => r)).toEqual([{ a: 1 }]);
 	writeFileSync(`${dir}/bad.jsonl`, '{"a":1}\n{"b":\n');
-	expect(() => readJsonl(`${dir}/bad.jsonl`)).toThrow("line 2");
+	expect(() => readJsonl(`${dir}/bad.jsonl`, (r) => r)).toThrow("line 2");
+	writeFileSync(`${dir}/p.jsonl`, '{"id":"a"}\n{"id":1}\n');
+	expect(() => readJsonl(`${dir}/p.jsonl`, (r) => { if (typeof r.id !== "string") throw new Error("bad id"); return r.id; })).toThrow("line 2 of");
 });
+

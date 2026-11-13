@@ -16,7 +16,7 @@ test("registers the existing tool, command, shortcuts, and lifecycle hooks", () 
  expect(tools.map(t => t.name)).toEqual(["todo_task"]);
  expect(commands).toEqual(["todos"]);
  expect(shortcuts).toEqual(["ctrl+shift+t", "ctrl+shift+v"]);
- expect(events).toEqual(["session_shutdown", "session_start", "session_switch", "before_agent_start", "tool_result"]);
+ expect(events).toEqual(["session_shutdown", "session_start", "before_agent_start", "tool_result"]);
 });
 
 test("shows the above-editor task panel even when there are no tasks", async () => {
@@ -52,12 +52,11 @@ test("file backend persists task operations without Dex", async () => {
   const ctx = { cwd: dir, hasUI: false, isProjectTrusted: () => true, ui: { notify: (message: string) => notifications.push(message) }, sessionManager: { getSessionId: () => "session" } };
   const run = async (params: any) => (await tool.execute("call", params, undefined, undefined, ctx)).content[0].text;
   const { readFileSync, writeFileSync } = await import("node:fs");
-  writeFileSync(process.env.PI_DO_FILE!, ["(A) 2024-01-01 Call Mom +Family @phone", "Other task"].map(todo => JSON.stringify({ todo })).join("\n") + "\n");
+  writeFileSync(process.env.PI_DO_FILE!, [{ id: "a", name: "Call Mom +Family @phone", completed: false, priority: "A", created: "2024-01-01", started_at: null }, { id: "b", name: "Other task", completed: false, started_at: null }].map(t => JSON.stringify(t)).join("\n") + "\n");
   const imported = JSON.parse(await run({ action: "list" }));
   expect(imported[0]).toMatchObject({ name: "Call Mom +Family @phone", priority: "A", created: "2024-01-01", completed: false });
   await run({ action: "complete", id: imported[0].id });
   const records = readFileSync(process.env.PI_DO_FILE!, "utf8").trimEnd().split("\n").map(line => JSON.parse(line));
-  // Legacy {"todo"} records are rewritten as one structured object each.
   expect(records[0]).toMatchObject({ name: "Call Mom +Family @phone", priority: "A", created: "2024-01-01", completed: true, completed_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/) });
   expect(records[1]).toEqual({ id: imported[1].id, name: "Other task", completed: false, started_at: null });
   const id = (await run({ action: "create", name: "one", description: "details" })).split(" ").pop();
@@ -338,17 +337,13 @@ test.skipIf(process.platform !== "darwin")("Things adapter: writes via URL schem
  } finally { if (prev !== undefined) process.env.PI_DO_THINGS_TOKEN = prev; }
 });
 
-test("config.json is JSONC, migrates config.jsonl, keeps $schema on this version", async () => {
- const { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } = await import("node:fs");
+test("config.json is JSONC, keeps $schema on this version", async () => {
+ const { mkdtempSync, writeFileSync, readFileSync, readdirSync } = await import("node:fs");
  const { tmpdir } = await import("node:os");
  const { join } = await import("node:path");
  const { readConfig, schemaUrl } = await import("../src/store.ts");
  const dir = mkdtempSync(join(tmpdir(), "pi-do-jsonc-"));
  expect(schemaUrl).toEndWith(`/v${JSON.parse(readFileSync("package.json", "utf8")).version}/schema.json`);
- // Legacy JSONL lines merge into config.json; the old file is removed.
- writeFileSync(join(dir, "config.jsonl"), '{"id":"abc"}\n{"scope":"global"}\n');
- expect(readConfig(dir)).toMatchObject({ $schema: schemaUrl, id: "abc", scope: "global" });
- expect(existsSync(join(dir, "config.jsonl"))).toBe(false);
  // Comments, trailing commas and "//" inside strings; an old $schema is bumped without losing comments.
  writeFileSync(join(dir, "config.json"), '{\n  "$schema": "https://x/v0.0.1/schema.json", // old\n  /* note */ "file": "~/a//b.jsonl",\n}\n');
  expect(readConfig(dir)).toMatchObject({ file: "~/a//b.jsonl" });
@@ -363,7 +358,7 @@ test("config.json is JSONC, migrates config.jsonl, keeps $schema on this version
  for (const ref of refs) expect(JSON.parse(readFileSync(ref, "utf8")).type).toBe("object");
 });
 
-test("store records are validated; legacy records convert; bad imports write nothing", async () => {
+test("store records are validated; bad imports write nothing", async () => {
  const { mkdtempSync, readFileSync, writeFileSync, rmSync } = await import("node:fs");
  const { runFile } = await import("../src/tasks.ts");
  const dir = mkdtempSync(`${(await import("node:os")).tmpdir()}/pi-do-schema-`), file = `${dir}/t.jsonl`;
@@ -372,9 +367,8 @@ test("store records are validated; legacy records convert; bad imports write not
    writeFileSync(file, bad + "\n");
    expect(() => runFile(file, ["list"])).toThrow(`line 1: ${why}`);
   }
-  writeFileSync(file, '{"todo":"(B) 2024-01-01 legacy +p"}\n\n');
-  const [legacy] = JSON.parse(runFile(file, ["list"]) as string);
-  expect(legacy).toEqual({ id: expect.stringMatching(/^line-1-/), name: "legacy +p", completed: false, priority: "B", created: "2024-01-01", started_at: null });
+  const first = { id: "t1", name: "first +p", completed: false, priority: "B", created: "2024-01-01", started_at: null };
+  writeFileSync(file, JSON.stringify(first) + "\n\n");
   const before = readFileSync(file, "utf8");
   await expect(runFile(file, ["import", "fine\npiid:only"])).rejects.toThrow("Invalid todo.txt line 2");
   expect(readFileSync(file, "utf8")).toBe(before);
@@ -382,8 +376,8 @@ test("store records are validated; legacy records convert; bad imports write not
   expect(await runFile(file, ["import", "same"])).toBe("Imported 0 tasks");
   const records = readFileSync(file, "utf8").trimEnd().split("\n").map((l) => JSON.parse(l));
   expect(records).toHaveLength(2);
-  expect(records[0]).toEqual(legacy); // legacy id kept so sync links survive conversion
-  await runFile(file, ["put", JSON.stringify({ id: legacy.id, name: "renamed", completed: true })]);
+  expect(records[0]).toEqual(first);
+  await runFile(file, ["put", JSON.stringify({ id: first.id, name: "renamed", completed: true })]);
   expect(JSON.parse(runFile(file, ["list"]) as string)[0]).toMatchObject({ name: "renamed", priority: "B", created: "2024-01-01", completed_date: expect.any(String), started_at: null });
   await expect(runFile(file, ["put", JSON.stringify({ id: "z", name: "z", completed: false, junk: 1 })])).rejects.toThrow("unknown key junk");
  } finally { rmSync(dir, { recursive: true, force: true }); }

@@ -58,7 +58,7 @@ Adapters sync pi-do's store with other todo apps. Each has its own connect instr
 
 ## Configuration
 
-`config.json` files are JSONC (comments and trailing commas allowed) and start with a `$schema` URL pinned to your installed version, so editors autocomplete and check every option ([`schema.json`](schema.json); each adapter's options are in `src/adapters/<name>/<name>.schema.json`). pi-do keeps that URL current when you upgrade, and converts an older `config.jsonl` automatically. Precedence: `~/.pi-do/config.json` (global) < the project's pi-do `config.json` < environment (`PI_DO_FILE`, `PI_DO_SCOPE`). `PI_DO_HOME` moves `~/.pi-do`.
+`config.json` files are JSONC (comments and trailing commas allowed) and start with a `$schema` URL pinned to your installed version, so editors autocomplete and check every option ([`schema.json`](schema.json); each adapter's options are in `src/adapters/<name>/<name>.schema.json`). pi-do keeps that URL current when you upgrade. Precedence: `~/.pi-do/config.json` (global) < the project's pi-do `config.json` < environment (`PI_DO_FILE`, `PI_DO_SCOPE`). `PI_DO_HOME` moves `~/.pi-do`.
 
 ```json
 {"adapters": {"dex": {"sync": true}}, "scope": "project"}

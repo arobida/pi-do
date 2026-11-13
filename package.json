@@ -23,12 +23,16 @@
   },
   "scripts": {
     "test": "bun test",
-    "check": "bun test",
+    "check": "tsc && bun test",
     "pack:check": "bun pm pack --dry-run"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "@earendil-works/pi-tui": "*",
     "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.4",
+    "typescript": "^7.0.2"
   }
 }

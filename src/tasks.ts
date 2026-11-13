@@ -10,15 +10,13 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 	if (action !== "list" && action !== "export") mkdirSync(dirname(file), { recursive: true });
 	return action === "list" || action === "export" ? mutate() : withLock(file, mutate);
 	function mutate(): string {
-	let items: Task[] = [], legacy = false;
+	let items: Task[] = [];
 	try {
 		const data = readFileSync(file, "utf8");
 		items = data.split("\n").flatMap((line, index) => {
 			if (!line.trim()) return []; // blank lines (hand edits) are harmless
 			let record: any;
 			try { record = JSON.parse(line); } catch { throw new Error(`Invalid pi-do JSONL record on line ${index + 1}`); }
-			// Pre-schema stores held {"todo": "<todo.txt line>"}; converted on the next write.
-			if (record && typeof record.todo === "string" && Object.keys(record).length === 1 && record.todo.trim() && !/[\r\n]/.test(record.todo)) { legacy = true; record = parseTodo(record.todo, index); }
 			try { return [toTask(record)]; } catch (error: any) { throw new Error(`Invalid pi-do JSONL record on line ${index + 1}: ${error.message}`); }
 		});
 	} catch (error: any) { if (error.code !== "ENOENT") throw error; }
@@ -44,7 +42,7 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 			if (ids.has(task.id)) continue;
 			ids.add(task.id); items.push(task); added++;
 		}
-		if (added || legacy) save();
+		if (added) save();
 		return `Imported ${added} tasks`;
 	}
 	if (action === "put") {

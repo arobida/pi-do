@@ -36,8 +36,8 @@ export function toTask(record: any): Task {
 const order = ["id", "name", "completed", "priority", "created", "completed_date", "started_at", "description", "parent", "result"];
 export const clean = (task: Task): Task => Object.fromEntries(Object.entries(task).sort(([a], [b]) => order.indexOf(a) - order.indexOf(b)).filter(([key, value]) => value !== undefined && (value !== "" || key === "name"))) as Task;
 
-// Parses one todo.txt line (import, legacy {"todo": ...} records). Legacy ids keep their line index so existing sync links still match.
-export function parseTodo(line: string, index?: number): Task {
+// Parses one todo.txt line (import).
+export function parseTodo(line: string): Task {
 	const meta: Record<string, string> = {};
 	let body = line.replace(/(?:^|\s)(piid|pistart|pidesc|piparent|piresult|pri):([^\s:]+)/g, (match, key, value) => {
 		if (key === "pri" && !/^[A-Z]$/.test(value)) return match;
@@ -50,7 +50,7 @@ export function parseTodo(line: string, index?: number): Task {
 	const created = body.match(/^(\d{4}-\d{2}-\d{2})\s+/);
 	if (created) body = body.slice(created[0].length);
 	return toTask(clean({
-		id: meta.piid || `line-${index === undefined ? "" : `${index + 1}-`}${createHash("sha256").update(line).digest("hex").slice(0, 12)}`,
+		id: meta.piid || `line-${createHash("sha256").update(line).digest("hex").slice(0, 12)}`,
 		name: body, completed: !!done, priority: pri?.[1] ?? meta.pri, created: created?.[1], completed_date: done?.[1],
 		started_at: meta.pistart || null, description: meta.pidesc, parent: meta.piparent, result: meta.piresult,
 	}));

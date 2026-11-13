@@ -173,7 +173,6 @@ export default function taskPanel(pi: ExtensionAPI) {
 	}
 	pi.on("session_shutdown", async () => unwatch());
 	pi.on("session_start", async (_event, ctx) => { void watchStore(ctx); restore(ctx); try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); } });
-	pi.on("session_switch", async (_event, ctx) => { void watchStore(ctx); restore(ctx); try { await refresh(ctx); } catch (error) { if (ctx.hasUI) ctx.ui.notify(`Tasks: ${error}`, "error"); } });
 	// Pick up tasks other agents added through Dex before each prompt.
 	pi.on("before_agent_start", async (_event, ctx) => { try { await refresh(ctx); } catch {} });
 	pi.on("tool_result", async (event, ctx) => {
