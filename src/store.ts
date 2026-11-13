@@ -66,6 +66,7 @@ export const globalDir = (s: { name: string; id: string }) => join(piDoHome(), "
 // Scope: env PI_DO_SCOPE > the project's record scope > global config.json > "project".
 export function settings(ctx: ExtensionContext, forceGlobal = false): Settings {
 	const root = piDoHome(), cwd = resolve(ctx.cwd), trusted = ctx.isProjectTrusted();
+	if (forceGlobal && !trusted) throw new Error("--global requires a trusted project");
 	const local = localDir(cwd);
 	const id: string = (trusted ? readConfig(local).id : undefined) ?? randomUUID();
 	const record = readJsonl(join(root, "projects", "projects.jsonl")).find((p) => p.id === id);

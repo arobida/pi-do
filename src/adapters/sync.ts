@@ -1,7 +1,8 @@
 import { join } from "node:path";
 import { mkdirSync, renameSync, writeFileSync } from "node:fs";
 import type { Task } from "../todo.ts";
-import { readJsonl } from "../util.ts";
+import { randomUUID } from "node:crypto";
+import { readJsonl, withLock } from "../util.ts";
 import { runFile } from "../tasks.ts";
 
 // An external todo app. Tasks use pi-do's shape; ids are the app's own.
@@ -23,7 +24,10 @@ const fields = ["name", "description", "completed", "started_at", "result", "par
 export async function sync(file: string, base: string, adapter: Adapter): Promise<void> {
 	const linksFile = join(base, "sync", `${adapter.name}.jsonl`);
 	mkdirSync(join(base, "sync"), { recursive: true });
+	return withLock(linksFile, async () => {
 	const links: Link[] = readJsonl(linksFile);
+	// Links are saved even if a later step throws, so created tasks are never duplicated next sync.
+	try {
 	const local: Task[] = JSON.parse(await runFile(file, ["list"]));
 	const remote = await adapter.list();
 	const byLocal = new Map(local.map((t) => [t.id, t])), byRemote = new Map(remote.map((t) => [t.id, t]));
@@ -55,10 +59,13 @@ export async function sync(file: string, base: string, adapter: Adapter): Promis
 			else if (rv[f] !== b[f]) (pull as any)[f] = rv[f];
 		}
 		if (Object.keys(push).length) await adapter.update(r.id, { ...push, parent: push.parent && toRemote.get(push.parent), result: lv.result });
-		if (Object.keys(pull).length) await put({ ...lv, ...pull });
+		if (Object.keys(pull).length) await put({ id: lv.id, ...Object.fromEntries(Object.entries(pull).map(([k, v]) => [k, v ?? ""])) } as Task);
 		link.base = { ...lv, ...pull };
 	}
-	const temp = `${linksFile}.tmp`;
-	writeFileSync(temp, links.map((l) => JSON.stringify(l)).join("\n") + "\n");
-	renameSync(temp, linksFile);
+	} finally {
+		const temp = `${linksFile}.${randomUUID()}.tmp`;
+		writeFileSync(temp, links.map((l) => JSON.stringify(l)).join("\n") + "\n");
+		renameSync(temp, linksFile);
+	}
+	});
 }

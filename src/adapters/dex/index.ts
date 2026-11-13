@@ -3,17 +3,17 @@ import { existsSync, mkdirSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { todoLine, type Task } from "../../todo.ts";
+import { type Task } from "../../todo.ts";
 import type { Adapter } from "../sync.ts";
 import { home } from "../../util.ts";
 
-export function dexTodo(task: any): string {
+// Validates a Dex task record; todo.txt rendering is left to export so names it cannot carry don't break listing.
+export function checkDex(task: any) {
 	if (typeof task.id !== "string" || typeof task.name !== "string" || typeof task.completed !== "boolean") throw new Error("Invalid Dex task");
 	const name = task.name.replace(/[\r\n]+/g, " ").trim();
 	if (!name) throw new Error(`Dex task ${task.id} has no name`);
 	const date = typeof task.completed_at === "string" && /^\d{4}-\d{2}-\d{2}/.test(task.completed_at) ? task.completed_at.slice(0, 10) : undefined;
 	if (task.completed && !date) throw new Error(`Dex task ${task.id} has no completion date`);
-	return todoLine({ ...task, name, parent: task.parent_id, completed_date: date });
 }
 
 function configured(cwd: string): boolean {
@@ -39,7 +39,7 @@ async function dex(pi: ExtensionAPI, ctx: ExtensionContext, args: string[], sign
 	return result.stdout;
 }
 
-const toTask = (t: any): Task => { dexTodo(t); return { id: t.id, name: t.name, completed: t.completed, started_at: t.started_at ?? null, description: t.description ?? undefined, parent: t.parent_id ?? undefined, result: t.result ?? undefined }; };
+const fromDex = (t: any): Task => { checkDex(t); return { id: t.id, name: t.name, completed: t.completed, started_at: t.started_at ?? null, description: t.description ?? undefined, parent: t.parent_id ?? undefined, result: t.result ?? undefined }; };
 
 export function dexAdapter(pi: ExtensionAPI, ctx: ExtensionContext): Adapter {
 	const run = (args: string[]) => dex(pi, ctx, args);
@@ -48,7 +48,7 @@ export function dexAdapter(pi: ExtensionAPI, ctx: ExtensionContext): Adapter {
 		async list() {
 			const data = JSON.parse(await run(["list", "--all", "--json"]));
 			if (!Array.isArray(data)) throw new Error("Invalid Dex task list");
-			return data.map(toTask);
+			return data.map(fromDex);
 		},
 		async create(task) {
 			const out = await run(["create", task.name, ...(task.description ? ["--description", task.description] : []), ...(task.parent ? ["--parent", task.parent] : [])]);

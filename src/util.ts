@@ -4,19 +4,20 @@ import { join } from "node:path";
 
 export const home = (path: string) => path === "~" ? homedir() : path.startsWith("~/") ? join(homedir(), path.slice(2)) : path;
 
-export async function withLock<T>(file: string, fn: () => T): Promise<T> {
+export async function withLock<T>(file: string, fn: () => T | Promise<T>): Promise<T> {
 	const lock = `${file}.lock`;
 	for (let i = 0; ; i++) {
 		try { writeFileSync(lock, String(process.pid), { flag: "wx" }); break; }
 		catch (error: any) {
 			if (error.code !== "EEXIST") throw error;
+			// shortcut: lock goes stale after 10s; a Things sync longer than that can overlap with another process, upgrade to heartbeat if seen.
 			// shortcut: a crashed holder's lock is treated as stale after 10s; fine for interactive use.
 			try { if (Date.now() - statSync(lock).mtimeMs > 10_000) { unlinkSync(lock); continue; } } catch {}
 			if (i > 200) throw new Error(`Task file is locked: ${lock}`);
 			await new Promise((r) => setTimeout(r, 25));
 		}
 	}
-	try { return fn(); } finally { try { unlinkSync(lock); } catch {} }
+	try { return await fn(); } finally { try { unlinkSync(lock); } catch {} }
 }
 
 export function readJsonl(path: string): any[] {

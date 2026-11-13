@@ -45,12 +45,12 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 	if (action === "put") {
 		// Sync writes a whole task (JSON in value): replace by id, or append.
 		const task: Task = JSON.parse(value);
-		checkName(task.name);
 		const at = items.findIndex((item) => item.id === task.id);
 		const old = items[at];
-		// Adapters don't carry todo.txt-only fields, so keep the stored ones.
-		const merged = { priority: old?.priority, created: old?.created, completed_date: old?.completed_date, ...task, started_at: task.started_at ?? null };
-		merged.completed_date = merged.completed ? merged.completed_date || args[2] || today() : undefined;
+		// Partial merge: a stale snapshot only overwrites the fields it carries ("" clears one); todo.txt-only fields stay.
+		const merged: any = { ...old, ...task };
+		merged.started_at ??= null;
+		merged.completed_date = merged.completed ? merged.completed_date || today() : undefined;
 		items[at < 0 ? items.length : at] = toTask(clean(merged));
 		save();
 		return `put: ${task.id}`;

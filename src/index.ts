@@ -50,7 +50,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 	function shown(): Task[] {
 		if (view === "completed") return tasks.filter((t) => t.completed);
 		// Current = tasks this session touched plus their subtasks from anywhere (e.g. `dex create --parent` by another agent); unrelated new tasks stay in Project.
-		if (view === "current") { const byId = new Map(tasks.map((t) => [t.id, t])); const current = (t: Task | undefined, depth = 0): boolean => !!t && depth < 50 && (mine.has(t.id) || current(t.parent ? byId.get(t.parent) : undefined, depth + 1)); return tasks.filter((t) => current(t)); }
+		if (view === "current") { const byId = new Map(tasks.map((t) => [t.id, t])); const memo = new Map<string, boolean>(); const current = (t: Task | undefined, depth = 0): boolean => { if (!t || depth >= 50) return false; if (!memo.has(t.id)) memo.set(t.id, mine.has(t.id) || current(t.parent ? byId.get(t.parent) : undefined, depth + 1)); return memo.get(t.id)!; }; return tasks.filter((t) => current(t)); }
 		return tasks.filter((t) => !t.completed);
 	}
 

@@ -61,7 +61,11 @@ export function todoLine(task: Task): string {
 	const head = task.completed ? ["x", task.completed_date] : [task.priority && `(${task.priority})`];
 	const tags = Object.entries({ pri: task.completed ? task.priority : undefined, piid: task.id, pistart: task.started_at, pidesc: task.description, piparent: task.parent, piresult: task.result })
 		.filter(([, value]) => typeof value === "string" && value !== "").map(([key, value]) => `${key}:${encodeURIComponent(value as string)}`);
-	return [...head, task.created, task.name.trim(), ...tags].filter(Boolean).join(" ");
+	const line = [...head, task.created, task.name.trim(), ...tags].filter(Boolean).join(" ");
+	// todo.txt has no escape, so a name that reads back as a marker (x, (A), date) must be refused rather than exported wrong.
+	const back = parseTodo(line);
+	if (back.name !== task.name.trim() || back.completed !== task.completed) throw new Error(`Task ${task.id} name cannot be exported to todo.txt without changing it: ${task.name}`);
+	return line;
 }
 
 // Names must survive a todo.txt export/import round trip and must not reach Dex as a flag.
