@@ -24,10 +24,15 @@ export function readJsonl(path: string): any[] {
 	let data: string;
 	try { data = readFileSync(path, "utf8"); }
 	catch (error: any) { if (error.code === "ENOENT") return []; throw new Error(`Cannot read ${path}: ${error.message}`); }
-	return data.split("\n").filter((line) => line.trim()).map((line, index) => {
+	const lines = data.split("\n").filter((line) => line.trim());
+	return lines.flatMap((line, index) => {
 		let record: any;
-		try { record = JSON.parse(line); } catch { throw new Error(`Invalid JSON on line ${index + 1} of ${path}`); }
+		try { record = JSON.parse(line); } catch {
+			// A crash mid-append leaves an unterminated last line; drop it rather than refuse the whole file.
+			if (index === lines.length - 1 && !data.endsWith("\n")) return [];
+			throw new Error(`Invalid JSON on line ${index + 1} of ${path}`);
+		}
 		if (!record || typeof record !== "object" || Array.isArray(record)) throw new Error(`Invalid record on line ${index + 1} of ${path}`);
-		return record;
+		return [record];
 	});
 }

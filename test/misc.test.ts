@@ -27,3 +27,13 @@ test("names that would read back as markers without a created date are refused",
 	expect(() => todoLine({ ...base, name: "(B) foo", completed: false })).toThrow("cannot be exported");
 	expect(() => todoLine({ ...base, name: "2026-01-01 foo", completed: false })).toThrow("cannot be exported");
 });
+
+test("readJsonl drops only an unterminated torn last line", async () => {
+	const { readJsonl } = await import("../src/util.ts");
+	const { mkdtempSync, writeFileSync } = await import("node:fs");
+	const dir = mkdtempSync(`${require("node:os").tmpdir()}/pido-`);
+	writeFileSync(`${dir}/torn.jsonl`, '{"a":1}\n{"b":');
+	expect(readJsonl(`${dir}/torn.jsonl`)).toEqual([{ a: 1 }]);
+	writeFileSync(`${dir}/bad.jsonl`, '{"a":1}\n{"b":\n');
+	expect(() => readJsonl(`${dir}/bad.jsonl`)).toThrow("line 2");
+});
