@@ -12,7 +12,8 @@ export async function withLock<T>(file: string, fn: () => T | Promise<T>): Promi
 			if (error.code !== "EEXIST") throw error;
 			// shortcut: a crashed holder's lock is treated as stale after 10s; fine for interactive use.
 			try { if (Date.now() - statSync(lock).mtimeMs > 10_000) { unlinkSync(lock); continue; } } catch {}
-			if (i > 200) throw new Error(`Task file is locked: ${lock}`);
+			// ~11s of waiting: outlasts the 10s stale window so a waiter can clear a crashed holder's lock.
+			if (i > 440) throw new Error(`Task file is locked: ${lock}`);
 			await new Promise((r) => setTimeout(r, 25));
 		}
 	}
