@@ -63,7 +63,7 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 	let index = items.length;
 	if (action === "create") {
 		const parent = option("--parent");
-		if (parent && !items.some((item) => item?.id === parent)) throw new Error(`Task not found: ${parent}`);
+		if (parent && !items.some((item) => item?.id === parent)) throw new Error(`Parent task not found: ${parent} (parent must be an existing task id; put details in description)`);
 		task = { id: randomUUID(), name: value, completed: false, created: today(), started_at: null, description: option("--description"), parent };
 	} else {
 		index = items.findIndex((item) => item?.id === value);

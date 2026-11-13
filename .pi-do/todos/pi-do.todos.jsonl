@@ -1,1 +1,6 @@
-{"todo":"Hello World piid:00c361da-3c36-4d8e-82d6-78d707df6c55"}
+{"id":"00c361da-3c36-4d8e-82d6-78d707df6c55","name":"Hello from Things","completed":false,"started_at":null}
+{"id":"3cbc8c03-8347-40f9-ba03-4ea6e6bcbc48","name":"Write test data fixtures","completed":true,"completed_date":"2026-11-12","started_at":"2026-11-12T09:52:11.918Z","result":"done"}
+{"id":"93b96d84-35d9-4bb0-a5dd-d4e83af0262f","name":"Verify list rendering","completed":true,"completed_date":"2026-11-12","started_at":"2026-11-12T09:52:11.926Z","result":"done"}
+{"id":"5590903a-7a50-4d94-8c58-dbbaff76e2e0","name":"Check completion flow","completed":true,"completed_date":"2026-11-12","started_at":"2026-11-12T09:52:11.931Z","result":"done"}
+{"id":"b3c4422d-6fe6-4fdb-b9f9-e251840b6e74","name":"Things sync renamed","completed":true,"created":"2026-11-13","completed_date":"2026-11-13","started_at":null,"description":"edited in pi","result":"ok"}
+{"id":"37e6d144-994d-4e95-addd-f080ff00e3cf","name":"Trigger sync","completed":false,"created":"2026-11-13","started_at":null}

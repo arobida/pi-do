@@ -92,7 +92,7 @@ export default function taskPanel(pi: ExtensionAPI) {
 			id: Type.Optional(Type.String({ description: "Task ID for start, complete, or edit" })),
 			name: Type.Optional(Type.String({ description: "Task name for create or edit" })),
 			description: Type.Optional(Type.String({ description: "Task details for create or edit" })),
-			parent: Type.Optional(Type.String({ description: "Parent task ID when creating" })),
+			parent: Type.Optional(Type.String({ description: "ID of an existing task to nest under (not free text)" })),
 			result: Type.Optional(Type.String({ description: "Completion result" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
