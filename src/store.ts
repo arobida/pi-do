@@ -4,6 +4,7 @@ import { homedir, tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { createHash, randomUUID } from "node:crypto";
 import { home, readJsonl } from "./util.ts";
+import { runFile } from "./tasks.ts";
 
 const { version } = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
 // Pinned to this install's version so editors validate against the options it actually supports; tag v<version> on release.
@@ -59,6 +60,12 @@ const toProject = (r: Record<string, unknown>): Project => {
 
 export const piDoHome = () => process.env.PI_DO_HOME || join(homedir(), ".pi-do");
 
+const registryFile = () => join(piDoHome(), "projects", "projects.jsonl");
+function saveRegistry(projects: Project[]) {
+	const temp = `${registryFile()}.${randomUUID()}.tmp`;
+	writeFileSync(temp, projects.map((p) => JSON.stringify(p) + "\n").join("")); renameSync(temp, registryFile());
+}
+
 export interface Settings { adapters: Record<string, { sync?: boolean }>; file?: string; scope: string; base: string; local: string; name: string; id: string; registered: boolean }
 
 export const localDir = (cwd: string) => join(cwd, existsSync(join(cwd, ".agents", "pi-do")) ? ".agents/pi-do" : ".pi-do");
@@ -100,6 +107,10 @@ export function storeFile(ctx: ExtensionContext, s: Settings): string {
 	if (!s.registered && s.scope !== "temp") {
 		appendFileSync(join(piDoHome(), "projects", "projects.jsonl"), JSON.stringify({ id: s.id, name: s.name, path: resolve(ctx.cwd), scope: s.scope, created: new Date().toISOString() }) + "\n");
 		s.registered = true;
+	} else if (s.scope !== "temp") {
+		// Last opened wins: a moved project re-registers its new path.
+		const projects = readJsonl(registryFile(), toProject), record = projects.find((p) => p.id === s.id);
+		if (record && record.path !== resolve(ctx.cwd)) { record.path = resolve(ctx.cwd); saveRegistry(projects); }
 	}
 	if (existsSync(file)) return file;
 	mkdirSync(todos, { recursive: true });
@@ -142,7 +153,31 @@ export function setScope(ctx: ExtensionContext, scope: string): string {
 	if (existsSync(join(from, "todos"))) { cpSync(join(from, "todos"), join(to, "todos"), { recursive: true, errorOnExist: true, force: false }); rmSync(join(from, "todos"), { recursive: true }); }
 	if (scope === "project") rmSync(from, { recursive: true, force: true });
 	record.scope = scope;
-	const temp = `${registry}.${randomUUID()}.tmp`;
-	writeFileSync(temp, projects.map((p) => JSON.stringify(p) + "\n").join("")); renameSync(temp, registry);
+	saveRegistry(projects);
 	return `Scope set to ${scope}: ${storeFile(ctx, settings(ctx))}`;
+}
+
+const findTask = (file: string, id: string): any => {
+	const task = JSON.parse(runFile(file, ["list"]) as string).find((t: any) => t.id === id);
+	if (!task) throw new Error(`Task not found: ${id}`);
+	return task;
+};
+
+// `[name](pido://<project-id>/<task-id>)`; only registered stores can be resolved later.
+export function link(ctx: ExtensionContext, id: string): string {
+	const s = settings(ctx);
+	if (s.scope === "temp" || s.file) throw new Error(`Cannot link: ${s.file ? "explicit-file" : "temp-scope"} stores are not registered, so the link could never be resolved`);
+	return `[${findTask(storeFile(ctx, s), id).name}](pido://${s.id}/${id})`;
+}
+
+// Looks the project up in the registry and reads its store; never a stale copy at an old path.
+export function resolveLink(url: string): string {
+	const m = url.match(/^pido:\/\/([\w-]+)\/([\w-]+)$/);
+	if (!m) throw new Error(`Invalid pido URL: ${url}`);
+	const p = readJsonl(registryFile(), toProject).find((r) => r.id === m[1]);
+	if (!p) throw new Error(`Unknown project: ${m[1]}`);
+	const local = localDir(p.path);
+	if (!existsSync(p.path) || readConfig(local).id !== p.id) throw new Error(`Project ${p.id} is no longer at ${p.path}; open pi in its new location to update the registry`);
+	const t = findTask(join(p.scope === "global" ? globalDir(p) : local, "todos", `${p.name}.todos.jsonl`), m[2]);
+	return `${t.name}\nState: ${t.completed ? "completed" : t.started_at ? "started" : "open"}\nResult: ${t.result ?? ""}`;
 }

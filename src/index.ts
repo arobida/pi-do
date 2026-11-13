@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, watch, type FSWatcher, readFileSync, writeFileSy
 import { dirname, resolve } from "node:path";
 import { checkName, type Task } from "./todo.ts";
 import { home } from "./util.ts";
-import { migrate, setScope, settings, storeFile } from "./store.ts";
+import { link, migrate, resolveLink, setScope, settings, storeFile } from "./store.ts";
 import { runFile } from "./tasks.ts";
 import { dexAdapter, dexWatchDirs } from "./adapters/dex/index.ts";
 import { sync, type Adapter } from "./adapters/sync.ts";
@@ -87,17 +87,22 @@ export default function taskPanel(pi: ExtensionAPI) {
 	pi.registerTool({
 		name: "todo_task",
 		label: "Tasks",
-		description: "Manage tasks with list, create, start, complete, or edit. Storage defaults to a temporary session file; Dex can sync via the adapters config.",
+		description: "Manage tasks with list, create, start, complete, edit, link (pido:// Markdown link for a task), or resolve (read a pido:// link). Storage defaults to a temporary session file; Dex can sync via the adapters config.",
 		parameters: Type.Object({
-			action: Type.Union([Type.Literal("list"), Type.Literal("create"), Type.Literal("start"), Type.Literal("complete"), Type.Literal("edit")]),
-			id: Type.Optional(Type.String({ description: "Task ID for start, complete, or edit" })),
+			action: Type.Union([Type.Literal("list"), Type.Literal("create"), Type.Literal("start"), Type.Literal("complete"), Type.Literal("edit"), Type.Literal("link"), Type.Literal("resolve")]),
+			id: Type.Optional(Type.String({ description: "Task ID for start, complete, edit, or link" })),
 			name: Type.Optional(Type.String({ description: "Task name for create or edit" })),
 			description: Type.Optional(Type.String({ description: "Task details for create or edit" })),
 			parent: Type.Optional(Type.String({ description: "ID of an existing task to nest under (not free text)" })),
 			result: Type.Optional(Type.String({ description: "Completion result" })),
+			url: Type.Optional(Type.String({ description: "pido://<project-id>/<task-id> link for resolve" })),
 		}),
 		async execute(_id, params, signal, _onUpdate, ctx) {
-			const { action, id, name, description, parent, result } = params;
+			const { action, id, name, description, parent, result, url } = params;
+			if (action === "link" || action === "resolve") {
+				if (action === "link" ? !id?.trim() : !url?.trim()) throw new Error(`${action} requires ${action === "link" ? "an id" : "a url"}`);
+				return { content: [{ type: "text", text: action === "link" ? link(ctx, id!) : resolveLink(url!) }], details: {} };
+			}
 			if (action === "create" && !name?.trim()) throw new Error("create requires a name");
 			if (["start", "complete", "edit"].includes(action) && !id?.trim()) throw new Error(`${action} requires an id`);
 			if (action === "edit" && name === undefined && description === undefined) throw new Error("edit requires a name or description");
