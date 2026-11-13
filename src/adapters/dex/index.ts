@@ -51,7 +51,7 @@ export function dexAdapter(pi: ExtensionAPI, ctx: ExtensionContext): Adapter {
 			return data.map(fromDex);
 		},
 		async create(task) {
-			const out = await run(["create", task.name, ...(task.description ? ["--description", task.description] : []), ...(task.parent ? ["--parent", task.parent] : [])]);
+			const out = await run(["create", "-n", task.name, ...(task.description ? ["--description", task.description] : []), ...(task.parent ? ["--parent", task.parent] : [])]);
 			const id = out.match(/Created task (\S+)/)?.[1];
 			if (!id) throw new Error(`Unexpected dex create output: ${out}`);
 			if (task.started_at || task.completed) await this.update(id, { started_at: task.started_at, completed: task.completed, result: task.result });
