@@ -67,7 +67,12 @@ export function thingsAdapter(pi: ExtensionAPI, project: string): Adapter {
 			throw new Error(`Things did not save "${task.name}"`);
 		},
 		async update(id, patch) {
-			await open("update", { id, "auth-token": token(), title: patch.name, notes: "description" in patch ? patch.description ?? "" : undefined, completed: patch.completed === undefined ? undefined : String(patch.completed) });
+			// Diff against Things' current state and send only real changes, so a repeated or overlapping sync is a no-op.
+			const cur = ((await read()) ?? []).find((t) => t.id === id);
+			const params = { title: patch.name, notes: "description" in patch ? patch.description ?? "" : undefined, completed: patch.completed === undefined ? undefined : String(patch.completed) };
+			if (cur) { if (params.title === cur.name) params.title = undefined; if (params.notes === cur.notes.replace(marker, "")) params.notes = undefined; if (params.completed === String(cur.status === "completed")) params.completed = undefined; }
+			if (Object.values(params).every((v) => v === undefined)) return;
+			await open("update", { id, "auth-token": token(), ...params });
 		},
 	};
 }

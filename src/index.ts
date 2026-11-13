@@ -73,7 +73,8 @@ export default function taskPanel(pi: ExtensionAPI) {
 	}
 
 	async function refresh(ctx: ExtensionContext) {
-		const data = JSON.parse(await run(ctx, ["list", "--all", "--json"]));
+		// The panel reads the store as-is: mutations already synced, and remote edits arrive via explicit list or watchers.
+		const data = JSON.parse(await runFile(storeFile(ctx, settings(ctx)), ["list", "--all", "--json"]));
 		if (!Array.isArray(data)) throw new Error("Invalid task list");
 		tasks = data;
 		if (!ctx.hasUI) return;
@@ -132,8 +133,10 @@ export default function taskPanel(pi: ExtensionAPI) {
 				if (io) {
 					const path = resolve(ctx.cwd, home(io[2].trim()));
 					if (io[1] === "import") { ctx.ui.notify(await run(ctx, ["import", readFileSync(path, "utf8")], undefined, global), "info"); await refresh(ctx); return; }
-					writeFileSync(path, await run(ctx, ["export"], undefined, global), { flag: "wx" });
+					const { text, skipped } = JSON.parse(await run(ctx, ["export"], undefined, global));
+					writeFileSync(path, text, { flag: "wx" });
 					ctx.ui.notify(`Exported tasks to ${path}`, "info");
+					if (skipped.length) ctx.ui.notify(`Not exported, todo.txt would misread these names (they start like a marker: x, (A), or a date). Rename them or give them a created date, then export again:\n${skipped.join("\n")}`, "warning");
 					return;
 				}
 				if ((views as readonly string[]).includes(want)) view = want as typeof view;

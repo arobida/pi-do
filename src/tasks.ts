@@ -22,7 +22,12 @@ export function runFile(file: string, args: string[]): string | Promise<string> 
 			try { return [toTask(record)]; } catch (error: any) { throw new Error(`Invalid pi-do JSONL record on line ${index + 1}: ${error.message}`); }
 		});
 	} catch (error: any) { if (error.code !== "ENOENT") throw error; }
-	if (action === "export") return items.map((task) => todoLine(task) + "\n").join("");
+	if (action === "export") {
+		// Tasks todo.txt can't hold unchanged are left out and named, so the rest still export.
+		const skipped: string[] = [];
+		const text = items.flatMap((task) => { try { return [todoLine(task) + "\n"]; } catch { skipped.push(`#${task.id} ${task.name}`); return []; } }).join("");
+		return JSON.stringify({ text, skipped });
+	}
 	if (action === "list") return JSON.stringify(items);
 	const save = () => { const temp = `${file}.${randomUUID()}.tmp`; writeFileSync(temp, items.map((task) => JSON.stringify(clean(task)) + "\n").join(""), { mode: 0o600 }); renameSync(temp, file); };
 	const today = () => new Date().toISOString().slice(0, 10);

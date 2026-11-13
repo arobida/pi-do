@@ -40,3 +40,25 @@ test("put: partial record keeps stored name", async () => {
 		expect(JSON.parse(await runFile(file, ["list"]) as string)[0]).toMatchObject({ name: "keep", completed: true });
 	} finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("sync: field cleared remotely is cleared locally", async () => {
+	const { dir, file, remote, adapter } = setup();
+	try {
+		await runFile(file, ["create", "a", "--description", "details"]);
+		await sync(file, dir, adapter);
+		const [r] = remote.values(); expect(r.description).toBe("details"); delete r.description;
+		await sync(file, dir, adapter);
+		expect(JSON.parse(await runFile(file, ["list"]) as string)[0].description).toBeUndefined();
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("export: names todo.txt would misread are skipped and reported, rest export", async () => {
+	const { dir, file } = setup();
+	try {
+		await runFile(file, ["create", "fine"]);
+		await runFile(file, ["put", JSON.stringify({ id: "bad", name: "x marks", completed: false, started_at: null })]);
+		const { text, skipped } = JSON.parse(await runFile(file, ["export"]) as string);
+		expect(text).toContain("fine"); expect(text).not.toContain("x marks");
+		expect(skipped).toEqual(["#bad x marks"]);
+	} finally { rmSync(dir, { recursive: true, force: true }); }
+});

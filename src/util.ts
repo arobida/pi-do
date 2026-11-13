@@ -10,7 +10,6 @@ export async function withLock<T>(file: string, fn: () => T | Promise<T>): Promi
 		try { writeFileSync(lock, String(process.pid), { flag: "wx" }); break; }
 		catch (error: any) {
 			if (error.code !== "EEXIST") throw error;
-			// shortcut: lock goes stale after 10s; a Things sync longer than that can overlap with another process, upgrade to heartbeat if seen.
 			// shortcut: a crashed holder's lock is treated as stale after 10s; fine for interactive use.
 			try { if (Date.now() - statSync(lock).mtimeMs > 10_000) { unlinkSync(lock); continue; } } catch {}
 			if (i > 200) throw new Error(`Task file is locked: ${lock}`);
